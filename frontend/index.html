@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fukidashi 吹き出し</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f6f1e7;
+  --paper-deep: #ece4d2;
+  --ink: #1a1714;
+  --ink-soft: #55504a;
+  --shu: #cc3a2b;          /* vermillion */
+  --shu-deep: #a82e21;
+  --line: #d8cdb6;
+  --room: #14120f;         /* reader surround */
+  --serif: "Shippori Mincho", "Hiragino Mincho ProN", serif;
+  --sans: "Zen Kaku Gothic New", "Hiragino Sans", sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { height: 100%; }
+body {
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  min-height: 100%;
+}
+/* halftone dot texture, very faint */
+body.library-mode {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(26,23,20,.06) 1px, transparent 0);
+  background-size: 14px 14px;
+}
+button { font-family: inherit; cursor: pointer; }
+input, select { font-family: inherit; }
+
+/* ============ LIBRARY ============ */
+#library { max-width: 980px; margin: 0 auto; padding: 40px 24px 96px; }
+
+header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom: 3px solid var(--ink); padding-bottom: 18px; }
+.masthead h1 {
+  font-family: var(--serif); font-weight: 800; font-size: clamp(2.4rem, 6vw, 3.6rem);
+  letter-spacing: .02em; line-height: 1;
+}
+.masthead h1 .jp { color: var(--shu); }
+.masthead .tag { color: var(--ink-soft); font-size: .95rem; }
+#status-chip {
+  margin-left: auto; font-size: .8rem; padding: 4px 12px; border: 1.5px solid var(--ink);
+  border-radius: 999px; white-space: nowrap;
+}
+#status-chip.bad { border-color: var(--shu); color: var(--shu); }
+
+/* import panel */
+#import-box {
+  margin-top: 32px; border: 2px dashed var(--ink-soft); border-radius: 4px;
+  padding: 26px; background: rgba(255,255,255,.45);
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  transition: border-color .15s, background .15s;
+}
+#import-box.drag { border-color: var(--shu); background: #fff; }
+#import-box .hint { flex-basis: 100%; color: var(--ink-soft); font-size: .9rem; }
+#import-box input[type=text] {
+  flex: 1 1 220px; padding: 10px 14px; border: 1.5px solid var(--ink);
+  background: var(--paper); font-size: 1rem; border-radius: 2px;
+}
+.btn {
+  border: 2px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 10px 22px; font-size: .95rem; font-weight: 700; border-radius: 2px;
+  transition: transform .08s, background .15s;
+}
+.btn:hover { background: var(--shu); border-color: var(--shu); }
+.btn:active { transform: translateY(1px); }
+.btn.ghost { background: transparent; color: var(--ink); }
+.btn.ghost:hover { background: var(--ink); color: var(--paper); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+/* volume cards */
+#volumes { margin-top: 40px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+.vol {
+  background: #fff; border: 1.5px solid var(--line); border-left: 6px solid var(--ink);
+  padding: 20px; border-radius: 3px; box-shadow: 4px 4px 0 rgba(26,23,20,.08);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.vol h3 { font-family: var(--serif); font-size: 1.25rem; font-weight: 700; }
+.vol .meta { font-size: .82rem; color: var(--ink-soft); display: flex; gap: 10px; flex-wrap: wrap; }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; }
+.pill.done { border-color: var(--shu); color: var(--shu); font-weight: 700; }
+.vol .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.vol input.lang {
+  width: 110px; padding: 7px 10px; border: 1.5px solid var(--line); border-radius: 2px;
+  background: var(--paper); font-size: .88rem;
+}
+.vol .btn { padding: 7px 14px; font-size: .85rem; }
+.vol .del { margin-left: auto; border: none; background: none; color: var(--ink-soft); font-size: .8rem; }
+.vol .del:hover { color: var(--shu); }
+.joblog {
+  font-size: .78rem; background: var(--ink); color: #cfc8ba; border-radius: 3px;
+  padding: 10px 12px; max-height: 130px; overflow-y: auto; font-family: ui-monospace, monospace;
+  white-space: pre-wrap; display: none;
+}
+.joblog.active { display: block; }
+.joblog .err { color: #ff8a7a; }
+#empty { margin-top: 60px; text-align: center; color: var(--ink-soft); font-family: var(--serif); font-size: 1.1rem; }
+
+/* ============ READER ============ */
+#reader { display: none; position: fixed; inset: 0; background: var(--room); color: #e8e2d4; flex-direction: column; }
+#reader.open { display: flex; }
+#reader-bar {
+  display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+  background: rgba(0,0,0,.35); border-bottom: 1px solid #2c2822; font-size: .88rem;
+}
+#reader-bar .title { font-family: var(--serif); font-weight: 700; font-size: 1.05rem; }
+#reader-bar .spacer { flex: 1; }
+#reader-bar button, #reader-bar select {
+  background: none; border: 1px solid #4a443a; color: #e8e2d4; padding: 5px 12px;
+  border-radius: 2px; font-size: .82rem;
+}
+#reader-bar button:hover { border-color: var(--shu); color: #fff; }
+#reader-bar button.on { background: var(--shu); border-color: var(--shu); color: #fff; }
+#page-ind { font-variant-numeric: tabular-nums; color: #9a928a; }
+
+#stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; padding: 14px; }
+#page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); }
+#page-img { display: block; max-height: calc(100vh - 90px); max-width: 100%; user-select: none; }
+
+.ov {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  background: #fdfbf6; color: #14120f; border-radius: 3px;
+  outline: 1px solid rgba(20,18,15,.25);
+  padding: 2px; text-align: center; line-height: 1.18; font-weight: 500;
+  overflow: hidden; cursor: help; font-family: var(--sans);
+}
+.ov:hover { outline: 2px solid var(--shu); z-index: 5; }
+.ov.pending { background: rgba(253,251,246,.55); color: transparent; }
+#reader.hide-ov .ov { display: none; }
+
+#orig-tip {
+  position: fixed; display: none; max-width: 340px; z-index: 50; pointer-events: none;
+  background: var(--ink); color: var(--paper); font-size: .95rem; padding: 10px 14px;
+  border-radius: 3px; border-left: 4px solid var(--shu); font-family: var(--serif);
+}
+
+.edge { position: absolute; top: 0; bottom: 0; width: 26%; z-index: 3; cursor: pointer; }
+.edge.left { left: 0; } .edge.right { right: 0; }
+.edge:hover::after {
+  content: attr(data-arrow); position: absolute; top: 50%; transform: translateY(-50%);
+  font-size: 2rem; color: rgba(232,226,212,.5);
+}
+.edge.left:hover::after { left: 14px; } .edge.right:hover::after { right: 14px; }
+
+#bible-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 92vw);
+  background: var(--paper); color: var(--ink); transform: translateX(100%);
+  transition: transform .22s ease; padding: 26px; overflow-y: auto; z-index: 20;
+  border-left: 4px solid var(--shu); box-shadow: -12px 0 40px rgba(0,0,0,.5);
+}
+#bible-drawer.open { transform: translateX(0); }
+#bible-drawer h2 { font-family: var(--serif); margin-bottom: 4px; }
+#bible-drawer .sub { color: var(--ink-soft); font-size: .82rem; margin-bottom: 16px; }
+#bible-text { white-space: pre-wrap; font-size: .9rem; line-height: 1.55; }
+
+#toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 3px;
+  border-left: 4px solid var(--shu); display: none; z-index: 99; font-size: .9rem;
+}
+</style>
+</head>
+<body class="library-mode">
+
+<div id="library">
+  <header class="masthead">
+    <h1>fukidashi <span class="jp">吹き出し</span></h1>
+    <span class="tag">context-aware manga translation</span>
+    <span id="status-chip">checking…</span>
+  </header>
+
+  <div id="import-box">
+    <span class="hint">Drop a <b>.cbz / .zip</b> of page images here (or browse), name it, and import.</span>
+    <input type="file" id="file-in" accept=".cbz,.zip" hidden>
+    <button class="btn ghost" id="browse-btn">Browse…</button>
+    <span id="file-name" style="color:var(--ink-soft);font-size:.9rem">no file selected</span>
+    <input type="text" id="title-in" placeholder="Title (e.g. Yotsuba&! v01)">
+    <button class="btn" id="import-btn">Import</button>
+  </div>
+
+  <div id="volumes"></div>
+  <div id="empty" hidden>The shelf is empty. Import a volume to begin.<br>本棚は空です</div>
+</div>
+
+<div id="reader">
+  <div id="reader-bar">
+    <button id="back-btn">← Library</button>
+    <span class="title" id="reader-title"></span>
+    <span class="spacer"></span>
+    <select id="lang-sel" title="translation language"></select>
+    <button id="ov-btn" class="on" title="toggle translations (t)">Translation</button>
+    <button id="bible-btn" title="story bible (b)">Bible</button>
+    <span id="page-ind"></span>
+  </div>
+  <div id="stage">
+    <div class="edge right" data-arrow="‹" title="previous page"></div>
+    <div class="edge left" data-arrow="›" title="next page"></div>
+    <div id="page-wrap">
+      <img id="page-img" alt="manga page">
+    </div>
+    <div id="bible-drawer">
+      <h2>Story bible 設定資料</h2>
+      <div class="sub">built by the context pass before translation</div>
+      <div id="bible-text"></div>
+    </div>
+  </div>
+</div>
+
+<div id="orig-tip"></div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (p, opts) => fetch(p, opts).then(async r => {
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+});
+function toast(msg, ms = 3200) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms);
+}
+
+/* ---------- status ---------- */
+async function refreshStatus() {
+  const chip = $('#status-chip');
+  try {
+    const s = await api('/api/status');
+    if (!s.ollama) { chip.textContent = '⚠ Ollama offline'; chip.className = 'bad'; }
+    else if (!s.model_present) { chip.textContent = `⚠ ${s.model} not pulled`; chip.className = 'bad'; }
+    else { chip.textContent = `● ${s.model}`; chip.className = ''; }
+  } catch { chip.textContent = '⚠ server?'; chip.className = 'bad'; }
+}
+
+/* ---------- library ---------- */
+async function loadLibrary() {
+  const vols = await api('/api/volumes');
+  $('#empty').hidden = vols.length > 0;
+  const box = $('#volumes'); box.innerHTML = '';
+  for (const v of vols) box.appendChild(volCard(v));
+}
+
+function volCard(v) {
+  const el = document.createElement('div');
+  el.className = 'vol';
+  const langPills = v.languages.map(l => `<span class="pill done">${l}</span>`).join('');
+  el.innerHTML = `
+    <h3>${esc(v.title)}</h3>
+    <div class="meta">
+      <span>${v.page_count} pages</span>
+      <span class="pill ${v.ocr_done ? 'done' : ''}">${v.ocr_done ? 'OCR ✓' : 'not OCR’d'}</span>
+      ${langPills}
+    </div>
+    <div class="row">
+      <input class="lang" value="English" title="target language">
+      <button class="btn translate">Translate</button>
+      ${v.languages.map(l => `<button class="btn ghost read" data-lang="${esc(l)}">Read · ${esc(l)}</button>`).join('')}
+      <button class="del" title="delete volume">delete</button>
+    </div>
+    <div class="joblog"></div>`;
+  el.querySelector('.translate').onclick = () => startJob(v.slug, el);
+  el.querySelectorAll('.read').forEach(b => b.onclick = () => openReader(v.slug, b.dataset.lang));
+  el.querySelector('.del').onclick = async () => {
+    if (!confirm(`Delete "${v.title}"?`)) return;
+    await api(`/api/volumes/${v.slug}`, { method: 'DELETE' });
+    loadLibrary();
+  };
+  return el;
+}
+
+async function startJob(slug, card) {
+  const lang = card.querySelector('.lang').value.trim() || 'English';
+  const log = card.querySelector('.joblog');
+  const btn = card.querySelector('.translate');
+  btn.disabled = true;
+  try {
+    const fd = new FormData(); fd.append('language', lang);
+    await api(`/api/volumes/${slug}/translate`, { method: 'POST', body: fd });
+  } catch (e) { toast(e.message); btn.disabled = false; return; }
+  log.classList.add('active'); log.textContent = '';
+  const es = new EventSource(`/api/volumes/${slug}/progress`);
+  es.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.done !== undefined) {
+      es.close(); btn.disabled = false;
+      if (d.error) { log.innerHTML += `<span class="err">${esc(d.error)}</span>`; }
+      else loadLibrary();
+      return;
+    }
+    log.textContent += d.message + '\n';
+    log.scrollTop = log.scrollHeight;
+  };
+  es.onerror = () => { es.close(); btn.disabled = false; };
+}
+
+/* ---------- import ---------- */
+let pickedFile = null;
+$('#browse-btn').onclick = () => $('#file-in').click();
+$('#file-in').onchange = e => setFile(e.target.files[0]);
+const ib = $('#import-box');
+ib.ondragover = e => { e.preventDefault(); ib.classList.add('drag'); };
+ib.ondragleave = () => ib.classList.remove('drag');
+ib.ondrop = e => {
+  e.preventDefault(); ib.classList.remove('drag');
+  setFile(e.dataTransfer.files[0]);
+};
+function setFile(f) {
+  if (!f) return;
+  pickedFile = f;
+  $('#file-name').textContent = f.name;
+  if (!$('#title-in').value) $('#title-in').value = f.name.replace(/\.(cbz|zip)$/i, '');
+}
+$('#import-btn').onclick = async () => {
+  if (!pickedFile) return toast('pick a .cbz first');
+  const title = $('#title-in').value.trim();
+  if (!title) return toast('give it a title');
+  const fd = new FormData();
+  fd.append('file', pickedFile); fd.append('title', title);
+  try {
+    await api('/api/import', { method: 'POST', body: fd });
+    pickedFile = null; $('#file-name').textContent = 'no file selected'; $('#title-in').value = '';
+    loadLibrary();
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------- reader ---------- */
+const R = { slug: null, data: null, page: 0, lang: 'English' };
+
+async function openReader(slug, lang) {
+  R.slug = slug; R.lang = lang;
+  R.data = await api(`/api/volumes/${slug}/reader?language=${encodeURIComponent(lang)}`);
+  R.page = 0;
+  $('#reader-title').textContent = R.data.title;
+  $('#bible-text').textContent = R.data.bible || '(no bible yet)';
+  const sel = $('#lang-sel');
+  sel.innerHTML = '';
+  const vols = await api('/api/volumes');
+  const langs = (vols.find(v => v.slug === slug) || {}).languages || [lang];
+  for (const l of langs) {
+    const o = document.createElement('option');
+    o.value = o.textContent = l; if (l === lang) o.selected = true;
+    sel.appendChild(o);
+  }
+  document.body.classList.remove('library-mode');
+  $('#reader').classList.add('open');
+  showPage(0);
+}
+$('#lang-sel').onchange = e => openReader(R.slug, e.target.value);
+
+function showPage(n) {
+  const d = R.data;
+  R.page = Math.max(0, Math.min(n, d.page_count - 1));
+  $('#page-ind').textContent = `${R.page + 1} / ${d.page_count}`;
+  const img = $('#page-img');
+  img.src = `/api/volumes/${R.slug}/pages/${R.page}`;
+  document.querySelectorAll('.ov').forEach(o => o.remove());
+  img.onload = () => renderOverlays();
+  // preload neighbours
+  for (const k of [R.page + 1, R.page - 1])
+    if (k >= 0 && k < d.page_count) new Image().src = `/api/volumes/${R.slug}/pages/${k}`;
+}
+
+function renderOverlays() {
+  const page = R.data.pages[R.page];
+  if (!page || !page.width) return;
+  const wrap = $('#page-wrap');
+  for (const b of page.blocks) {
+    const [x1, y1, x2, y2] = b.box;
+    const ov = document.createElement('div');
+    ov.className = 'ov' + (b.translation == null ? ' pending' : '');
+    ov.style.left = (x1 / page.width * 100) + '%';
+    ov.style.top = (y1 / page.height * 100) + '%';
+    ov.style.width = ((x2 - x1) / page.width * 100) + '%';
+    ov.style.height = ((y2 - y1) / page.height * 100) + '%';
+    ov.textContent = b.translation ?? '';
+    ov.onmousemove = e => showTip(e, b.text);
+    ov.onmouseleave = hideTip;
+    wrap.appendChild(ov);
+    fitText(ov);
+  }
+}
+
+function fitText(ov) {
+  let size = Math.max(9, Math.min(26, ov.clientHeight * 0.28));
+  ov.style.fontSize = size + 'px';
+  while (size > 6 && (ov.scrollHeight > ov.clientHeight || ov.scrollWidth > ov.clientWidth)) {
+    size -= 1; ov.style.fontSize = size + 'px';
+  }
+}
+
+function showTip(e, text) {
+  const tip = $('#orig-tip');
+  tip.textContent = text; tip.style.display = 'block';
+  const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const r = tip.getBoundingClientRect();
+  if (x + r.width > innerWidth - 8) x = e.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = e.clientY - r.height - pad;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function hideTip() { $('#orig-tip').style.display = 'none'; }
+
+/* manga is RTL: left edge / ← = next page */
+document.querySelector('.edge.left').onclick = () => showPage(R.page + 1);
+document.querySelector('.edge.right').onclick = () => showPage(R.page - 1);
+$('#back-btn').onclick = closeReader;
+$('#ov-btn').onclick = toggleOv;
+$('#bible-btn').onclick = () => $('#bible-drawer').classList.toggle('open');
+
+function toggleOv() {
+  $('#reader').classList.toggle('hide-ov');
+  $('#ov-btn').classList.toggle('on');
+}
+function closeReader() {
+  $('#reader').classList.remove('open');
+  $('#bible-drawer').classList.remove('open');
+  document.body.classList.add('library-mode');
+  hideTip();
+  loadLibrary();
+}
+
+addEventListener('keydown', e => {
+  if (!$('#reader').classList.contains('open')) return;
+  if (e.key === 'ArrowLeft') showPage(R.page + 1);
+  else if (e.key === 'ArrowRight') showPage(R.page - 1);
+  else if (e.key === 't') toggleOv();
+  else if (e.key === 'b') $('#bible-drawer').classList.toggle('open');
+  else if (e.key === 'Escape') closeReader();
+});
+addEventListener('resize', () => {
+  if ($('#reader').classList.contains('open'))
+    document.querySelectorAll('.ov').forEach(fitText);
+});
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+refreshStatus(); loadLibrary();
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>

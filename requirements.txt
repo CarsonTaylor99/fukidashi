@@ -1,0 +1,7 @@
+fastapi>=0.111
+uvicorn>=0.30
+python-multipart>=0.0.9
+httpx>=0.27
+mokuro>=0.2.4
+sentencepiece>=0.2.0  # manga-ocr tokenizer; mokuro fails silently without it
+transformers<5        # v5 drops the slow-tokenizer conversion manga-ocr needs
