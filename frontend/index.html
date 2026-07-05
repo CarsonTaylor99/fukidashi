@@ -126,8 +126,10 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 #page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); }
 #page-img { display: block; max-height: calc(100vh - 90px); max-width: 100%; user-select: none; }
 
-/* typesetting: a feathered white mask hides the original text, then the
-   translation is lettered in a wider box centered on the bubble */
+/* typesetting: pages whose bubbles were detected are served pre-cleaned
+   (original text painted out server-side) and the translation is lettered
+   into the real bubble's inscribed rect. Blocks without a detected bubble
+   fall back to a feathered white mask + guessed box. */
 .ov-mask {
   position: absolute; background: #fff; border-radius: 50%;
   box-shadow: 0 0 7px 5px #fff; pointer-events: none;
@@ -138,8 +140,9 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
   color: #111; text-align: center; cursor: help;
   font-family: "Comic Neue", "Comic Sans MS", var(--sans);
   font-weight: 700; line-height: 1.08; letter-spacing: .01em;
-  overflow: hidden; border-radius: 8px;
+  overflow: hidden; border-radius: 8px; overflow-wrap: break-word;
 }
+.ov span { text-wrap: balance; }
 .ov:hover { box-shadow: inset 0 0 0 2px var(--shu); z-index: 5; }
 .ov.pending { color: transparent; }
 .ov.pending + .ov-mask, .ov-mask.pending { opacity: .5; }
@@ -366,36 +369,68 @@ async function openReader(slug, lang) {
 }
 $('#lang-sel').onchange = e => openReader(R.slug, e.target.value);
 
+/* Show the cleaned (text-erased) page only when every block on it has a
+   translation to letter in — otherwise readers would face empty bubbles.
+   With translations toggled off, always show the untouched original. */
+function useCleaned(n) {
+  const p = R.data.pages[n];
+  return !$('#reader').classList.contains('hide-ov') &&
+         p && p.blocks.length > 0 && p.blocks.every(b => b.translation != null);
+}
+function pageSrc(n) {
+  return `/api/volumes/${R.slug}/${useCleaned(n) ? 'cleaned' : 'pages'}/${n}`;
+}
+
 function showPage(n) {
   const d = R.data;
   R.page = Math.max(0, Math.min(n, d.page_count - 1));
   $('#page-ind').textContent = `${R.page + 1} / ${d.page_count}`;
   const img = $('#page-img');
-  img.src = `/api/volumes/${R.slug}/pages/${R.page}`;
+  img.src = pageSrc(R.page);
   document.querySelectorAll('.ov, .ov-mask').forEach(o => o.remove());
   img.onload = () => renderOverlays();
   // preload neighbours
   for (const k of [R.page + 1, R.page - 1])
-    if (k >= 0 && k < d.page_count) new Image().src = `/api/volumes/${R.slug}/pages/${k}`;
+    if (k >= 0 && k < d.page_count) new Image().src = pageSrc(k);
 }
 
 function renderOverlays() {
   const page = R.data.pages[R.page];
   if (!page || !page.width) return;
+  const cleaned = useCleaned(R.page);
   const wrap = $('#page-wrap');
   const pct = (v, total) => (v / total * 100) + '%';
+  const place = (el, x, y, w, h) => {
+    el.style.left = pct(x, page.width);
+    el.style.top = pct(y, page.height);
+    el.style.width = pct(w, page.width);
+    el.style.height = pct(h, page.height);
+  };
   for (const b of page.blocks) {
+    // detected bubble on a cleaned page: the original text is already
+    // erased server-side — just letter into the bubble's real rect
+    if (cleaned && b.bubble) {
+      const [bx1, by1, bx2, by2] = b.bubble;
+      const ov = document.createElement('div');
+      ov.className = 'ov';
+      place(ov, bx1, by1, bx2 - bx1, by2 - by1);
+      ov.appendChild(document.createElement('span')).textContent = b.translation;
+      ov.onmousemove = e => showTip(e, b.text);
+      ov.onmouseleave = hideTip;
+      wrap.appendChild(ov);
+      fitText(ov);
+      continue;
+    }
+
+    // fallback (no bubble found, or page not fully translated yet):
+    // feathered white mask over the original + guessed label box
     const [x1, y1, x2, y2] = b.box;
     const bw = x2 - x1, bh = y2 - y1, cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
 
-    // mask: feathered white ellipse hiding the original text
     const mask = document.createElement('div');
     mask.className = 'ov-mask' + (b.vertical ? '' : ' h') +
                      (b.translation == null ? ' pending' : '');
-    mask.style.left = pct(x1, page.width);
-    mask.style.top = pct(y1, page.height);
-    mask.style.width = pct(bw, page.width);
-    mask.style.height = pct(bh, page.height);
+    place(mask, x1, y1, bw, bh);
     wrap.appendChild(mask);
 
     // label: English is horizontal, so vertical JP columns (tall+narrow)
@@ -409,11 +444,8 @@ function renderOverlays() {
     let ly = Math.max(6, Math.min(cy - lh / 2, page.height - lh - 6));
     const ov = document.createElement('div');
     ov.className = 'ov' + (b.translation == null ? ' pending' : '');
-    ov.style.left = pct(lx, page.width);
-    ov.style.top = pct(ly, page.height);
-    ov.style.width = pct(lw, page.width);
-    ov.style.height = pct(lh, page.height);
-    ov.textContent = b.translation ?? '';
+    place(ov, lx, ly, lw, lh);
+    ov.appendChild(document.createElement('span')).textContent = b.translation ?? '';
     ov.onmousemove = e => showTip(e, b.text);
     ov.onmouseleave = hideTip;
     wrap.appendChild(ov);
@@ -422,11 +454,15 @@ function renderOverlays() {
 }
 
 function fitText(ov) {
-  // largest size (binary search) whose text still fits the label box
-  let lo = 7, hi = Math.min(34, Math.round(ov.clientHeight * 0.6));
+  // largest size (binary search) whose text still fits the label box —
+  // measured on the inner span: scrollHeight misses content that a
+  // centered flexbox pushes past the TOP edge, which clipped first lines
+  const span = ov.firstElementChild;
+  let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
-    return ov.scrollHeight <= ov.clientHeight && ov.scrollWidth <= ov.clientWidth;
+    const r = span.getBoundingClientRect();
+    return r.height <= ov.clientHeight + 0.5 && r.width <= ov.clientWidth + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -457,6 +493,7 @@ $('#bible-btn').onclick = () => $('#bible-drawer').classList.toggle('open');
 function toggleOv() {
   $('#reader').classList.toggle('hide-ov');
   $('#ov-btn').classList.toggle('on');
+  showPage(R.page);  // cleaned vs original image differs per mode
 }
 function closeReader() {
   $('#reader').classList.remove('open');

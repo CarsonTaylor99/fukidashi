@@ -4,7 +4,7 @@ that the server streams to the browser over SSE."""
 import threading
 import traceback
 
-from . import bible, library, ocr, translate
+from . import bible, bubbles, library, ocr, translate
 
 
 class Job:
@@ -60,6 +60,9 @@ def _run(job: Job) -> None:
         if not library.load_json(job.slug, "ocr.json"):
             job.log("stage: OCR")
             ocr.run(job.slug, log=job.log)
+        if not library.load_json(job.slug, "bubbles.json"):
+            job.log("stage: bubble detection")
+            bubbles.run(job.slug, log=job.log)
         saved = library.load_json(job.slug, "bible.json")
         if not saved or saved.get("target_lang") != job.target_lang:
             job.log("stage: context pass (reading the whole work)")

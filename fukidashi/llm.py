@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from .config import OLLAMA_MODEL, OLLAMA_URL
+from .config import OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_URL
 
 
 class OllamaError(RuntimeError):
@@ -23,7 +23,8 @@ def chat(system: str, user: str, json_schema: dict | None = None,
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "options": {"temperature": temperature, "num_ctx": 8192},
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": temperature, "num_ctx": OLLAMA_NUM_CTX},
     }
     if json_schema is not None:
         body["format"] = json_schema

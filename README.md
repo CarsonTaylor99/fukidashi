@@ -49,9 +49,10 @@ Generate a 5-page synthetic test volume (a story specifically designed to break 
 ```
 fukidashi/
   ocr.py        mokuro wrapper → ocr.json (blocks + boxes, reading order)
+  bubbles.py    flood-fill bubble detection → bubbles.json + cleaned/ pages
   bible.py      context pass → bible.json (story bible)
   translate.py  page-by-page pass → translations.<lang>.json
-  pipeline.py   background job: OCR → bible → translate, SSE progress
+  pipeline.py   background job: OCR → bubbles → bible → translate, SSE progress
   server.py     FastAPI app + reader API
 frontend/       single-page library + reader UI
 data/library/   your volumes (images + JSON, no database)

@@ -102,6 +102,17 @@ def page_image(slug: str, n: int):
     return FileResponse(files[n])
 
 
+@app.get("/api/volumes/{slug}/cleaned/{n}")
+def cleaned_page_image(slug: str, n: int):
+    """Page with original bubble text painted out (falls back to the
+    original image if the bubble pass didn't touch this page)."""
+    files = library.page_files(slug)
+    if not 0 <= n < len(files):
+        raise HTTPException(404, "no such page")
+    cleaned = library.volume_dir(slug) / "cleaned" / files[n].name
+    return FileResponse(cleaned if cleaned.exists() else files[n])
+
+
 @app.get("/api/volumes/{slug}/reader")
 def reader_data(slug: str, language: str = "English"):
     """Everything the reader needs: per-page blocks with boxes, original
@@ -113,6 +124,7 @@ def reader_data(slug: str, language: str = "English"):
     lang_file = f"translations.{language.lower().replace(' ', '-')}.json"
     translations = library.load_json(slug, lang_file) or {}
     bible = library.load_json(slug, "bible.json") or {}
+    bubbles = {p["page"]: p["bubbles"] for p in library.load_json(slug, "bubbles.json") or []}
     pages = []
     by_page = {p["page"]: p for p in ocr}
     for n in range(meta["page_count"]):
@@ -120,12 +132,14 @@ def reader_data(slug: str, language: str = "English"):
         blocks = []
         if p:
             trs = translations.get(str(n), [])
+            bubs = bubbles.get(n, [])
             for i, b in enumerate(p["blocks"]):
                 blocks.append({
                     "box": b["box"],
                     "vertical": b["vertical"],
                     "text": b["text"],
                     "translation": trs[i] if i < len(trs) else None,
+                    "bubble": bubs[i] if i < len(bubs) else None,
                 })
         pages.append({
             "width": p["width"] if p else None,
