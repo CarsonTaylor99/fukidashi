@@ -53,13 +53,20 @@ def delete_volume(slug: str):
 
 
 @app.post("/api/volumes/{slug}/translate")
-def start_translate(slug: str, language: str = Form("English")):
+def start_translate(slug: str, language: str = Form("English"), force: bool = Form(False)):
     if not library.volume_dir(slug).exists():
         raise HTTPException(404, "no such volume")
     if not llm.available():
         raise HTTPException(503, "Ollama is not reachable")
+    lang = language.strip() or "English"
+    if force:
+        # discard bible + translations so a model/prompt change takes
+        # effect (translation otherwise resumes past finished pages)
+        (library.volume_dir(slug) / "bible.json").unlink(missing_ok=True)
+        lang_file = f"translations.{lang.lower().replace(' ', '-')}.json"
+        (library.volume_dir(slug) / lang_file).unlink(missing_ok=True)
     try:
-        pipeline.start(slug, language.strip() or "English")
+        pipeline.start(slug, lang)
     except RuntimeError as e:
         raise HTTPException(409, str(e))
     return {"ok": True}

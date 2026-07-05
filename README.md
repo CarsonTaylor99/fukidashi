@@ -16,7 +16,7 @@ Everything runs locally: [Ollama](https://ollama.com) drives the translation (de
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # torch is large; grab coffee
-ollama pull qwen2.5:14b
+ollama pull gemma3:27b   # ~17GB VRAM; smaller fallback: qwen2.5:14b
 ./start.sh                                   # http://localhost:8014
 ```
 
@@ -40,7 +40,7 @@ Generate a 5-page synthetic test volume (a story specifically designed to break 
 
 | env var | default | |
 |---|---|---|
-| `FUKIDASHI_MODEL` | `qwen2.5:14b` | Ollama model for both passes |
+| `FUKIDASHI_MODEL` | `gemma3:27b` | Ollama model for both passes |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `FUKIDASHI_LIBRARY` | `data/library` | where volumes live |
 

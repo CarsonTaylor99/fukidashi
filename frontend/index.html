@@ -6,7 +6,7 @@
 <title>fukidashi 吹き出し</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Comic+Neue:wght@700&display=swap" rel="stylesheet">
 <style>
 :root {
   --paper: #f6f1e7;
@@ -126,16 +126,24 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 #page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); }
 #page-img { display: block; max-height: calc(100vh - 90px); max-width: 100%; user-select: none; }
 
+/* typesetting: a feathered white mask hides the original text, then the
+   translation is lettered in a wider box centered on the bubble */
+.ov-mask {
+  position: absolute; background: #fff; border-radius: 50%;
+  box-shadow: 0 0 7px 5px #fff; pointer-events: none;
+}
+.ov-mask.h { border-radius: 32% / 48%; }
 .ov {
   position: absolute; display: flex; align-items: center; justify-content: center;
-  background: #fdfbf6; color: #14120f; border-radius: 3px;
-  outline: 1px solid rgba(20,18,15,.25);
-  padding: 2px; text-align: center; line-height: 1.18; font-weight: 500;
-  overflow: hidden; cursor: help; font-family: var(--sans);
+  color: #111; text-align: center; cursor: help;
+  font-family: "Comic Neue", "Comic Sans MS", var(--sans);
+  font-weight: 700; line-height: 1.08; letter-spacing: .01em;
+  overflow: hidden; border-radius: 8px;
 }
-.ov:hover { outline: 2px solid var(--shu); z-index: 5; }
-.ov.pending { background: rgba(253,251,246,.55); color: transparent; }
-#reader.hide-ov .ov { display: none; }
+.ov:hover { box-shadow: inset 0 0 0 2px var(--shu); z-index: 5; }
+.ov.pending { color: transparent; }
+.ov.pending + .ov-mask, .ov-mask.pending { opacity: .5; }
+#reader.hide-ov .ov, #reader.hide-ov .ov-mask { display: none; }
 
 #orig-tip {
   position: fixed; display: none; max-width: 340px; z-index: 50; pointer-events: none;
@@ -262,6 +270,8 @@ function volCard(v) {
     <div class="row">
       <input class="lang" value="English" title="target language">
       <button class="btn translate">Translate</button>
+      <label style="font-size:.78rem;color:var(--ink-soft)" title="discard existing translation and bible, e.g. after a model change">
+        <input type="checkbox" class="force"> redo</label>
       ${v.languages.map(l => `<button class="btn ghost read" data-lang="${esc(l)}">Read · ${esc(l)}</button>`).join('')}
       <button class="del" title="delete volume">delete</button>
     </div>
@@ -283,6 +293,7 @@ async function startJob(slug, card) {
   btn.disabled = true;
   try {
     const fd = new FormData(); fd.append('language', lang);
+    if (card.querySelector('.force').checked) fd.append('force', 'true');
     await api(`/api/volumes/${slug}/translate`, { method: 'POST', body: fd });
   } catch (e) { toast(e.message); btn.disabled = false; return; }
   log.classList.add('active'); log.textContent = '';
@@ -361,7 +372,7 @@ function showPage(n) {
   $('#page-ind').textContent = `${R.page + 1} / ${d.page_count}`;
   const img = $('#page-img');
   img.src = `/api/volumes/${R.slug}/pages/${R.page}`;
-  document.querySelectorAll('.ov').forEach(o => o.remove());
+  document.querySelectorAll('.ov, .ov-mask').forEach(o => o.remove());
   img.onload = () => renderOverlays();
   // preload neighbours
   for (const k of [R.page + 1, R.page - 1])
@@ -372,14 +383,36 @@ function renderOverlays() {
   const page = R.data.pages[R.page];
   if (!page || !page.width) return;
   const wrap = $('#page-wrap');
+  const pct = (v, total) => (v / total * 100) + '%';
   for (const b of page.blocks) {
     const [x1, y1, x2, y2] = b.box;
+    const bw = x2 - x1, bh = y2 - y1, cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+
+    // mask: feathered white ellipse hiding the original text
+    const mask = document.createElement('div');
+    mask.className = 'ov-mask' + (b.vertical ? '' : ' h') +
+                     (b.translation == null ? ' pending' : '');
+    mask.style.left = pct(x1, page.width);
+    mask.style.top = pct(y1, page.height);
+    mask.style.width = pct(bw, page.width);
+    mask.style.height = pct(bh, page.height);
+    wrap.appendChild(mask);
+
+    // label: English is horizontal, so vertical JP columns (tall+narrow)
+    // get a wider box centered on the bubble; clamp to the page.
+    let lw = bw, lh = bh;
+    if (b.vertical && bh > bw) {
+      lw = Math.min(bw * 2.8, bh * 1.4, page.width * 0.45);
+      lh = bh * 0.9;
+    }
+    let lx = Math.max(6, Math.min(cx - lw / 2, page.width - lw - 6));
+    let ly = Math.max(6, Math.min(cy - lh / 2, page.height - lh - 6));
     const ov = document.createElement('div');
     ov.className = 'ov' + (b.translation == null ? ' pending' : '');
-    ov.style.left = (x1 / page.width * 100) + '%';
-    ov.style.top = (y1 / page.height * 100) + '%';
-    ov.style.width = ((x2 - x1) / page.width * 100) + '%';
-    ov.style.height = ((y2 - y1) / page.height * 100) + '%';
+    ov.style.left = pct(lx, page.width);
+    ov.style.top = pct(ly, page.height);
+    ov.style.width = pct(lw, page.width);
+    ov.style.height = pct(lh, page.height);
     ov.textContent = b.translation ?? '';
     ov.onmousemove = e => showTip(e, b.text);
     ov.onmouseleave = hideTip;
@@ -389,11 +422,17 @@ function renderOverlays() {
 }
 
 function fitText(ov) {
-  let size = Math.max(9, Math.min(26, ov.clientHeight * 0.28));
-  ov.style.fontSize = size + 'px';
-  while (size > 6 && (ov.scrollHeight > ov.clientHeight || ov.scrollWidth > ov.clientWidth)) {
-    size -= 1; ov.style.fontSize = size + 'px';
+  // largest size (binary search) whose text still fits the label box
+  let lo = 7, hi = Math.min(34, Math.round(ov.clientHeight * 0.6));
+  const fits = s => {
+    ov.style.fontSize = s + 'px';
+    return ov.scrollHeight <= ov.clientHeight && ov.scrollWidth <= ov.clientWidth;
+  };
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(mid)) lo = mid; else hi = mid - 1;
   }
+  ov.style.fontSize = lo + 'px';
 }
 
 function showTip(e, text) {
@@ -437,7 +476,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('resize', () => {
   if ($('#reader').classList.contains('open'))
-    document.querySelectorAll('.ov').forEach(fitText);
+    document.querySelectorAll('.ov').forEach(o => fitText(o));
 });
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
