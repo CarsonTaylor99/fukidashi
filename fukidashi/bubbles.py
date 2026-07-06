@@ -93,10 +93,11 @@ def _detect_page(img, blocks: list[dict], bubbles: list) -> bool:
             continue
         cv2.drawContours(img, [contour], -1, (255, 255, 255), cv2.FILLED)
         modified = True
+        chords = _chords(solid)
         if len(idxs) == 1:
-            bubbles[idxs[0]] = {"rect": list(rect), "chords": _chords(solid)}
+            bubbles[idxs[0]] = {"rect": list(rect), "chords": chords}
         else:
-            _split_rect(rect, idxs, blocks, bubbles)
+            _split_bubble(rect, chords, idxs, blocks, bubbles)
     return modified
 
 
@@ -203,27 +204,44 @@ def _inscribed_rect(solid) -> tuple | None:
     return (x1 + mx, y1 + my, x2 - mx, y2 - my)
 
 
-def _split_rect(rect, idxs: list[int], blocks: list[dict], bubbles: list) -> None:
-    """Several OCR blocks share one bubble (joined bubbles): slice the
-    inscribed rect along the axis the blocks are spread over, sized by
-    text length."""
+def _split_bubble(rect, chords, idxs: list[int], blocks: list[dict], bubbles: list) -> None:
+    """Several OCR blocks share one bubble (joined bubbles): each block
+    becomes its own placement region, anchored at the original cluster's
+    position — boundaries fall at the midpoints between neighbouring
+    cluster centres along the axis the clusters spread over. The bubble's
+    chords are clipped to each region so every cluster still wraps to the
+    bubble's curve. Falls back to text-length slicing if the anchored
+    boundaries collapse (clusters bunched at one end)."""
     centers = {i: ((blocks[i]["box"][0] + blocks[i]["box"][2]) / 2,
                    (blocks[i]["box"][1] + blocks[i]["box"][3]) / 2) for i in idxs}
     spread_x = max(c[0] for c in centers.values()) - min(c[0] for c in centers.values())
     spread_y = max(c[1] for c in centers.values()) - min(c[1] for c in centers.values())
     axis = 0 if spread_x >= spread_y else 1
     ordered = sorted(idxs, key=lambda i: centers[i][axis])
-    weights = [max(1, len(blocks[i]["text"])) for i in ordered]
-    total = sum(weights)
-    length = rect[axis + 2] - rect[axis]
-    pos = float(rect[axis])
-    for i, wgt in zip(ordered, weights):
-        seg = length * wgt / total
-        r = list(rect)
-        r[axis] = round(pos)
-        r[axis + 2] = round(pos + seg) - 2
-        bubbles[i] = {"rect": r}  # shared bubble: no shape flow, rect only
-        pos += seg
+    lo, hi = rect[axis], rect[axis + 2]
+    cuts = [round((centers[a][axis] + centers[b][axis]) / 2)
+            for a, b in zip(ordered, ordered[1:])]
+    bounds = [lo] + [min(hi, max(lo, c)) for c in cuts] + [hi]
+    if any(b2 - b1 < 16 for b1, b2 in zip(bounds, bounds[1:])):
+        weights = [max(1, len(blocks[i]["text"])) for i in ordered]
+        total, pos, bounds = sum(weights), float(lo), [lo]
+        for w in weights:
+            pos += (hi - lo) * w / total
+            bounds.append(round(pos))
+    for k, i in enumerate(ordered):
+        s1, s2 = bounds[k], bounds[k + 1] - 2
+        seg = list(rect)
+        seg[axis], seg[axis + 2] = s1, s2
+        sub = None
+        if chords:
+            if axis == 0:
+                sub = [[y, max(xl, s1), min(xr, s2)] for y, xl, xr in chords
+                       if min(xr, s2) - max(xl, s1) >= 12]
+            else:
+                sub = [[y, xl, xr] for y, xl, xr in chords if s1 <= y <= s2]
+            if len(sub) < 3:
+                sub = None
+        bubbles[i] = {"rect": seg, "chords": sub}
 
 
 def _imread(path):

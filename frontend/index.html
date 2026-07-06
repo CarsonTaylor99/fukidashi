@@ -6,7 +6,7 @@
 <title>fukidashi 吹き出し</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Comic+Neue:wght@700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Comic+Neue:wght@700&family=Permanent+Marker&display=swap" rel="stylesheet">
 <style>
 :root {
   --paper: #f6f1e7;
@@ -151,6 +151,16 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 .ov.shaped .sp { pointer-events: none; }
 .ov.shaped .sp.l { float: left; width: 50%; height: 100%; }
 .ov.shaped .sp.r { float: right; width: 50%; height: 100%; }
+/* SFX / floating text (no bubble mask found): handwritten, at the source
+   text's own spot and proportional to its size — not dialogue lettering */
+.ov.sfx {
+  display: block; overflow: visible; width: max-content;
+  transform: translate(-50%, -50%); border-radius: 0;
+  font-family: "Permanent Marker", "Comic Neue", cursive; font-weight: 400;
+  letter-spacing: .04em; line-height: 1.05;
+  text-shadow: -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff,
+               2px 2px 0 #fff, 0 0 6px #fff;
+}
 .ov:hover { box-shadow: inset 0 0 0 2px var(--shu); z-index: 5; }
 .ov.pending { color: transparent; }
 .ov.pending + .ov-mask, .ov-mask.pending { opacity: .5; }
@@ -423,7 +433,7 @@ function renderOverlays() {
       if (bub.chords && bub.chords.length >= 3) {
         const ov = shapedOverlay(b, bub.chords, place);
         wrap.appendChild(ov);
-        fitShaped(ov);
+        ov._refit();
         continue;
       }
       const [bx1, by1, bx2, by2] = bub.rect;
@@ -434,7 +444,8 @@ function renderOverlays() {
       ov.onmousemove = e => showTip(e, b.text);
       ov.onmouseleave = hideTip;
       wrap.appendChild(ov);
-      fitText(ov);
+      ov._refit = () => fitText(ov);
+      ov._refit();
       continue;
     }
 
@@ -448,6 +459,16 @@ function renderOverlays() {
                      (b.translation == null ? ' pending' : '');
     place(mask, x1, y1, bw, bh);
     wrap.appendChild(mask);
+
+    // fully-translated page but no bubble mask around this block: it's
+    // SFX / floating text drawn over art, not dialogue — handwritten
+    // lettering at the source spot, sized like the source glyphs
+    if (cleaned && !b.bubble) {
+      const ov = sfxOverlay(b, page);
+      wrap.appendChild(ov);
+      ov._refit();
+      continue;
+    }
 
     // label: English is horizontal, so vertical JP columns (tall+narrow)
     // get a wider box centered on the bubble; clamp to the page.
@@ -465,8 +486,33 @@ function renderOverlays() {
     ov.onmousemove = e => showTip(e, b.text);
     ov.onmouseleave = hideTip;
     wrap.appendChild(ov);
-    fitText(ov);
+    ov._refit = () => fitText(ov);
+    ov._refit();
   }
+}
+
+function sfxOverlay(b, page) {
+  const [x1, y1, x2, y2] = b.box;
+  const ov = document.createElement('div');
+  ov.className = 'ov sfx';
+  ov.style.left = ((x1 + x2) / 2 / page.width * 100) + '%';
+  ov.style.top = ((y1 + y2) / 2 / page.height * 100) + '%';
+  // long floating text must wrap, not run off the page: cap the width
+  // near the source cluster's own footprint (vertical JP columns are
+  // tall, so use the larger side), never more than 55% of the page
+  const cap = Math.min(0.55 * page.width, 2.6 * Math.max(x2 - x1, (y2 - y1) * 0.6));
+  ov.style.maxWidth = (cap / page.width * 100) + '%';
+  ov.appendChild(document.createElement('span')).textContent = b.translation;
+  // proportional size: approximate source glyph size from box area per char
+  const chars = Math.max(1, [...b.text].length);
+  const pgFont = Math.sqrt((x2 - x1) * (y2 - y1) / chars);
+  ov._refit = () => {
+    const scale = $('#page-img').clientWidth / page.width;
+    ov.style.fontSize = Math.max(11, Math.min(64, pgFont * scale * 0.95)) + 'px';
+  };
+  ov.onmousemove = e => showTip(e, b.text);
+  ov.onmouseleave = hideTip;
+  return ov;
 }
 
 /* Build a shaped overlay over the chords' bounding box. ov._shape(shelfPct)
@@ -517,18 +563,22 @@ function shapedOverlay(b, chords, place) {
   };
   ov.onmousemove = e => showTip(e, b.text);
   ov.onmouseleave = hideTip;
+  ov._refit = () => fitShaped(ov);
   return ov;
 }
 
 function fitShaped(ov) {
   // same binary search as fitText, but overflow shows up as content
-  // pushed below the full-height floats, i.e. scrollHeight growth
+  // pushed below the full-height floats, i.e. scrollHeight growth;
+  // the wrapped text's bbox is also capped at ~70% of the region area
   const span = ov.lastElementChild;
   ov._shape(0);
   let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
-    return ov.scrollHeight <= ov.clientHeight + 0.5;
+    if (ov.scrollHeight > ov.clientHeight + 0.5) return false;
+    const r = span.getBoundingClientRect();
+    return r.width * r.height <= 0.70 * ov.clientWidth * ov.clientHeight + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -548,15 +598,16 @@ function fitShaped(ov) {
 }
 
 function fitText(ov) {
-  // largest size (binary search) whose text still fits the label box —
-  // measured on the inner span: scrollHeight misses content that a
-  // centered flexbox pushes past the TOP edge, which clipped first lines
+  // largest size (binary search) whose wrapped-text bbox fills ~70% of
+  // the label box (0.84 per axis ≈ 70% by area) — measured on the inner
+  // span: scrollHeight misses content that a centered flexbox pushes
+  // past the TOP edge, which clipped first lines
   const span = ov.firstElementChild;
   let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
     const r = span.getBoundingClientRect();
-    return r.height <= ov.clientHeight + 0.5 && r.width <= ov.clientWidth + 0.5;
+    return r.height <= ov.clientHeight * 0.84 + 0.5 && r.width <= ov.clientWidth * 0.84 + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -607,8 +658,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('resize', () => {
   if ($('#reader').classList.contains('open'))
-    document.querySelectorAll('.ov').forEach(o =>
-      o.classList.contains('shaped') ? fitShaped(o) : fitText(o));
+    document.querySelectorAll('.ov').forEach(o => o._refit && o._refit());
 });
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
