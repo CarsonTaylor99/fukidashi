@@ -143,6 +143,14 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
   overflow: hidden; border-radius: 8px; overflow-wrap: break-word;
 }
 .ov span { text-wrap: balance; }
+/* shaped flow: two invisible floats carve everything outside the bubble
+   contour out of the line boxes (shape-outside), so text wraps to the
+   bubble's own curve — long lines through the belly, short at the crown */
+.ov.shaped { display: block; overflow-wrap: normal; }  /* never split words: too-wide words must drop to a wider row instead */
+.ov.shaped span { text-wrap: wrap; }
+.ov.shaped .sp { pointer-events: none; }
+.ov.shaped .sp.l { float: left; width: 50%; height: 100%; }
+.ov.shaped .sp.r { float: right; width: 50%; height: 100%; }
 .ov:hover { box-shadow: inset 0 0 0 2px var(--shu); z-index: 5; }
 .ov.pending { color: transparent; }
 .ov.pending + .ov-mask, .ov-mask.pending { opacity: .5; }
@@ -408,9 +416,17 @@ function renderOverlays() {
   };
   for (const b of page.blocks) {
     // detected bubble on a cleaned page: the original text is already
-    // erased server-side — just letter into the bubble's real rect
+    // erased server-side — flow into the bubble's actual shape when we
+    // have its cross-sections, else letter into the inscribed rect
     if (cleaned && b.bubble) {
-      const [bx1, by1, bx2, by2] = b.bubble;
+      const bub = Array.isArray(b.bubble) ? { rect: b.bubble } : b.bubble;
+      if (bub.chords && bub.chords.length >= 3) {
+        const ov = shapedOverlay(b, bub.chords, place);
+        wrap.appendChild(ov);
+        fitShaped(ov);
+        continue;
+      }
+      const [bx1, by1, bx2, by2] = bub.rect;
       const ov = document.createElement('div');
       ov.className = 'ov';
       place(ov, bx1, by1, bx2 - bx1, by2 - by1);
@@ -451,6 +467,84 @@ function renderOverlays() {
     wrap.appendChild(ov);
     fitText(ov);
   }
+}
+
+/* Build a shaped overlay over the chords' bounding box. ov._shape(shelfPct)
+   (re)generates the two float polygons; rows above the shelf are fully
+   excluded, which is how fitShaped pushes text down to centre it. */
+function shapedOverlay(b, chords, place) {
+  const x1 = Math.min(...chords.map(c => c[1])), x2 = Math.max(...chords.map(c => c[2]));
+  const y1 = chords[0][0], y2 = chords[chords.length - 1][0];
+  const ov = document.createElement('div');
+  ov.className = 'ov shaped';
+  place(ov, x1, y1, x2 - x1, y2 - y1);
+  const l = document.createElement('div'), r = document.createElement('div');
+  l.className = 'sp l'; r.className = 'sp r';
+  const span = document.createElement('span');
+  span.textContent = b.translation;
+  ov.append(l, r, span);
+  const W = x2 - x1, H = y2 - y1, half = W / 2;
+  const clamp = v => Math.max(0, Math.min(100, v));
+  const pts = chords.map(([y, xl, xr]) => [(y - y1) / H * 100,
+    clamp((xl - x1) / half * 100), clamp((xr - x1 - half) / half * 100)]);
+  ov._shape = shelfPct => {
+    // a shelf excludes the full width above shelfPct (vertical centering);
+    // the contour is interpolated at the shelf line so any shelf height
+    // works, not just multiples of the chord spacing
+    let rows = pts;
+    if (shelfPct > 0) {
+      const i = pts.findIndex(p => p[0] >= shelfPct);
+      rows = i < 0 ? [pts[pts.length - 1]] : pts.slice(i);
+      if (i > 0) {
+        const [y0, l0, r0] = pts[i - 1], [y1_, l1, r1] = pts[i];
+        const t = (shelfPct - y0) / (y1_ - y0);
+        rows = [[shelfPct, l0 + (l1 - l0) * t, r0 + (r1 - r0) * t], ...rows];
+      }
+    }
+    const f = v => v.toFixed(2);
+    const lp = ['0% 0%'], rp = ['100% 0%'];
+    if (shelfPct > 0) {
+      lp.push('100% 0%', `100% ${f(rows[0][0])}%`);
+      rp.push('0% 0%', `0% ${f(rows[0][0])}%`);
+    }
+    for (const [yp, xl, xr] of rows) {
+      lp.push(`${f(xl)}% ${f(yp)}%`);
+      rp.push(`${f(xr)}% ${f(yp)}%`);
+    }
+    lp.push('0% 100%'); rp.push('100% 100%');
+    l.style.shapeOutside = `polygon(${lp.join(',')})`;
+    r.style.shapeOutside = `polygon(${rp.join(',')})`;
+  };
+  ov.onmousemove = e => showTip(e, b.text);
+  ov.onmouseleave = hideTip;
+  return ov;
+}
+
+function fitShaped(ov) {
+  // same binary search as fitText, but overflow shows up as content
+  // pushed below the full-height floats, i.e. scrollHeight growth
+  const span = ov.lastElementChild;
+  ov._shape(0);
+  let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
+  const fits = s => {
+    ov.style.fontSize = s + 'px';
+    return ov.scrollHeight <= ov.clientHeight + 0.5;
+  };
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(mid)) lo = mid; else hi = mid - 1;
+  }
+  ov.style.fontSize = lo + 'px';
+  // centre vertically: shelf text down to the middle of the leftover
+  // space; convex bubbles only widen toward the middle so this almost
+  // always still fits — back off by halves when it doesn't
+  const used = span.getBoundingClientRect().bottom - ov.getBoundingClientRect().top;
+  let shelf = Math.max(0, (ov.clientHeight - used) / 2 / ov.clientHeight * 100);
+  for (; shelf >= 1; shelf /= 2) {
+    ov._shape(shelf);
+    if (ov.scrollHeight <= ov.clientHeight + 0.5) return;
+  }
+  ov._shape(0);
 }
 
 function fitText(ov) {
@@ -513,7 +607,8 @@ addEventListener('keydown', e => {
 });
 addEventListener('resize', () => {
   if ($('#reader').classList.contains('open'))
-    document.querySelectorAll('.ov').forEach(o => fitText(o));
+    document.querySelectorAll('.ov').forEach(o =>
+      o.classList.contains('shaped') ? fitShaped(o) : fitText(o));
 });
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }

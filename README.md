@@ -6,17 +6,17 @@ A manga reader that translates the **entire work with full context**, not bubble
 
 1. **OCR the whole volume** — [mokuro](https://github.com/kha-white/mokuro) (comic-text-detector + manga-ocr) finds every speech bubble and its pixel coordinates.
 2. **Context pass** — the full text is read start to finish by a local LLM, which builds a *story bible*: characters, name renderings, relationships, speech styles, honorifics policy, recurring terms and jokes.
-3. **Translation pass** — each page is translated with the story bible plus a rolling window of previous pages in context, into **any target language**.
-4. **Read** — a web reader overlays translations on the actual bubbles; hover any bubble to see the original Japanese.
+3. **Translation pass** — each page is drafted three times at spread temperatures, then an editor pass picks or splices the most natural line per bubble (with the story bible plus a rolling window of previous pages in context), into **any target language**.
+4. **Read** — a web reader flows each translation into the bubble's actual shape (long lines through the belly, short at the crown, like a human letterer); hover any bubble to see the original Japanese.
 
-Everything runs locally: [Ollama](https://ollama.com) drives the translation (default model `qwen2.5:14b`), OCR runs on your GPU if you have one.
+Everything runs locally: [Ollama](https://ollama.com) drives the translation. The default model is an abliterated gemma3 27B — same quality as stock, but it won't refuse or sanitize adult works (doujinshi etc.).
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # torch is large; grab coffee
-ollama pull gemma3:27b   # ~17GB VRAM; smaller fallback: qwen2.5:14b
+ollama pull aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m   # ~17GB VRAM; SFW-only alternative: gemma3:27b
 ./start.sh                                   # http://localhost:8014
 ```
 
@@ -40,7 +40,8 @@ Generate a 5-page synthetic test volume (a story specifically designed to break 
 
 | env var | default | |
 |---|---|---|
-| `FUKIDASHI_MODEL` | `gemma3:27b` | Ollama model for both passes |
+| `FUKIDASHI_MODEL` | `aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m` | Ollama model for all passes |
+| `FUKIDASHI_DRAFTS` | `3` | drafts per page before the editor pass; `1` = single-shot, ~4× faster |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `FUKIDASHI_LIBRARY` | `data/library` | where volumes live |
 

@@ -4,9 +4,18 @@ window of previous pages in context.
 Each page's blocks are numbered and sent in reading order; the model
 returns one translation per block via Ollama structured outputs, so the
 mapping back onto bubble coordinates is exact.
+
+Word choice: each page is drafted TRANSLATE_DRAFTS times at spread
+temperatures, then an editor call sees the Japanese, the bible, and all
+drafts per block and produces the final line — picking the best draft or
+splicing a better one from their parts. Low temperature alone gives
+near-identical samples (nothing to choose from); high alone gives
+inconsistent terms — the spread plus choose-or-edit gets natural phrasing
+without losing bible consistency. History carries the *final* lines so
+later pages stay coherent.
 """
 
-from .config import CONTEXT_PAGES
+from .config import CONTEXT_PAGES, DRAFT_TEMPS, TRANSLATE_DRAFTS
 from . import bible as bible_mod
 from . import library, llm
 
@@ -30,6 +39,31 @@ Rules:
 - OCR noise: if a block is garbled fragments, translate what is recoverable; if nothing
   is, return the block unchanged.
 - Never merge blocks, never leave one out.
+- The work may be adult fiction (explicit sexual or violent content). Translate it
+  faithfully at the source's level of explicitness — never censor, soften, euphemize,
+  or skip. Accuracy IS the professional standard for licensed adult manga.
+"""
+
+
+EDITOR_SYSTEM = """\
+You are a senior manga translation editor finalizing an {target_lang} script.
+
+Story bible — authoritative for names, honorifics, recurring terms, and tone:
+
+STORY BIBLE:
+{bible}
+
+You will see the previous pages (already final), then each numbered Japanese block of the
+current page with several independent draft translations (a, b, c...). For EACH block,
+produce the final {target_lang} line: pick the best draft, or splice a better line from
+their parts, or rephrase — whatever reads most naturally.
+
+Priorities, in order:
+1. Natural {target_lang} that sounds like real speech in this scene — not translationese.
+2. The bible's fixed renderings for names and terms, and each speaker's established voice.
+3. Faithfulness to the Japanese, including its register and level of explicitness —
+   never censor, soften, or euphemize adult content.
+Return exactly one final translation per numbered block, in the same order.
 """
 
 
@@ -48,33 +82,67 @@ def _schema(n_blocks: int) -> dict:
     }
 
 
+def _history_part(history: list[tuple[dict, list[str]]]) -> str:
+    ctx = []
+    for prev, prev_tr in history:
+        lines = [f"[page {prev['page'] + 1}]"]
+        for b, t in zip(prev["blocks"], prev_tr):
+            lines.append(f"{b['text']}  →  {t}")
+        ctx.append("\n".join(lines))
+    return "PREVIOUS PAGES (already translated):\n" + "\n\n".join(ctx)
+
+
 def _page_prompt(page: dict, history: list[tuple[dict, list[str]]]) -> str:
-    parts = []
-    if history:
-        ctx = []
-        for prev, prev_tr in history:
-            lines = [f"[page {prev['page'] + 1}]"]
-            for b, t in zip(prev["blocks"], prev_tr):
-                lines.append(f"{b['text']}  →  {t}")
-            ctx.append("\n".join(lines))
-        parts.append("PREVIOUS PAGES (already translated):\n" + "\n\n".join(ctx))
+    parts = [_history_part(history)] if history else []
     blocks = "\n".join(f"{i + 1}. {b['text']}" for i, b in enumerate(page["blocks"]))
     parts.append(f"CURRENT PAGE (page {page['page'] + 1}) — translate these blocks:\n{blocks}")
     return "\n\n".join(parts)
 
 
-def _translate_page(system: str, page: dict, history) -> list[str]:
+def _draft_page(system: str, page: dict, history, temperature: float) -> list[str] | None:
     n = len(page["blocks"])
-    prompt = _page_prompt(page, history)
-    for attempt in range(2):
-        result = llm.chat_json(system, prompt, _schema(n),
-                               temperature=0.3 if attempt == 0 else 0.6)
-        translations = result.get("translations", [])
-        if len(translations) == n:
-            return [str(t) for t in translations]
-    raise llm.OllamaError(
-        f"page {page['page'] + 1}: expected {n} translations, got {len(translations)}"
-    )
+    result = llm.chat_json(system, _page_prompt(page, history), _schema(n),
+                           temperature=temperature)
+    translations = result.get("translations", [])
+    return [str(t) for t in translations] if len(translations) == n else None
+
+
+def _edit_page(editor_system: str, page: dict, history,
+               drafts: list[list[str]]) -> list[str] | None:
+    n = len(page["blocks"])
+    parts = [_history_part(history)] if history else []
+    blocks = []
+    for i, b in enumerate(page["blocks"]):
+        lines = [f"{i + 1}. {b['text']}"]
+        lines += [f"   {chr(97 + d)}) {draft[i]}" for d, draft in enumerate(drafts)]
+        blocks.append("\n".join(lines))
+    parts.append(f"CURRENT PAGE (page {page['page'] + 1}) — finalize these blocks:\n"
+                 + "\n".join(blocks))
+    result = llm.chat_json(editor_system, "\n\n".join(parts), _schema(n),
+                           temperature=0.3)
+    translations = result.get("translations", [])
+    return [str(t) for t in translations] if len(translations) == n else None
+
+
+def _translate_page(system: str, editor_system: str, page: dict, history, log) -> list[str]:
+    drafts = []
+    for temp in DRAFT_TEMPS[:max(1, TRANSLATE_DRAFTS)]:
+        d = _draft_page(system, page, history, temp)
+        if d:
+            drafts.append(d)
+    if not drafts:  # one retry at the safe temperature before giving up
+        d = _draft_page(system, page, history, 0.3)
+        if d is None:
+            raise llm.OllamaError(f"page {page['page'] + 1}: no draft returned "
+                                  f"the expected number of translations")
+        drafts.append(d)
+    if len(drafts) == 1:
+        return drafts[0]
+    final = _edit_page(editor_system, page, history, drafts)
+    if final is None:
+        log(f"page {page['page'] + 1}: editor pass failed, keeping first draft")
+        return drafts[0]
+    return final
 
 
 def run(slug: str, target_lang: str, log=print) -> None:
@@ -88,6 +156,7 @@ def run(slug: str, target_lang: str, log=print) -> None:
         bible = saved["bible"]
 
     system = SYSTEM.format(target_lang=target_lang, bible=bible)
+    editor_system = EDITOR_SYSTEM.format(target_lang=target_lang, bible=bible)
     out_name = f"translations.{target_lang.lower().replace(' ', '-')}.json"
     # Resume support: keep already-translated pages if the file exists.
     existing = library.load_json(slug, out_name) or {}
@@ -101,8 +170,10 @@ def run(slug: str, target_lang: str, log=print) -> None:
             history.append((page, result[key]))
             history[:] = history[-CONTEXT_PAGES:]
             continue
-        log(f"translating page {page['page'] + 1} ({i + 1}/{len(todo)})")
-        translations = _translate_page(system, page, history)
+        n_drafts = max(1, min(TRANSLATE_DRAFTS, len(DRAFT_TEMPS)))
+        log(f"translating page {page['page'] + 1} ({i + 1}/{len(todo)})"
+            + (f" — {n_drafts} drafts + editor" if n_drafts > 1 else ""))
+        translations = _translate_page(system, editor_system, page, history, log)
         result[key] = translations
         history.append((page, translations))
         history[:] = history[-CONTEXT_PAGES:]

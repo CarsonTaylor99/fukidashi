@@ -29,6 +29,10 @@ The bible must be written in {target_lang} and cover, as far as the text so far 
 - TONE: genre, register, target reading level.
 - OPEN QUESTIONS: ambiguities to resolve as you read further (e.g. unknown speaker genders).
 
+The work may be adult fiction (explicit sexual or violent content). Describe characters,
+relationships, and terms plainly and accurately — a sanitized bible produces a wrong
+translation. Do not moralize or omit.
+
 Output ONLY the updated story bible text, no preamble.
 """
 

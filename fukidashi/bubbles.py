@@ -10,7 +10,9 @@ region is the bubble interior. From it we derive:
   * a cleaned copy of the page (cleaned/<page filename>) with the bubble
     interior painted white — the original text is gone, no masking hacks;
   * per block, the largest centered rectangle inscribed in the bubble,
-    the space the reader can honestly typeset the translation into.
+    plus (for blocks that own their bubble) horizontal cross-sections of
+    the interior, so the reader can flow text into the bubble's actual
+    shape rather than confining it to the rectangle.
 
 Blocks whose flood fails validation (open bubbles, SFX drawn over art,
 screentone backgrounds) get null and the frontend falls back to the old
@@ -30,6 +32,8 @@ MAX_AREA_FRAC = 0.35       # white region bigger than this share of the page = l
 MIN_TEXTBOX_OVERLAP = 0.7  # bubble bbox must cover this much of the text box
 SEED_OFFSET = 6            # px outside the text box to probe for bubble interior
 RECT_MARGIN = 3            # breathing room (px) between text rect and bubble edge
+SHAPE_MARGIN = 5           # erosion (px) between flowed text and bubble edge
+CHORD_ROWS = 18            # horizontal cross-sections sampled per bubble
 
 
 def run(slug: str, log=print) -> list[dict]:
@@ -90,10 +94,35 @@ def _detect_page(img, blocks: list[dict], bubbles: list) -> bool:
         cv2.drawContours(img, [contour], -1, (255, 255, 255), cv2.FILLED)
         modified = True
         if len(idxs) == 1:
-            bubbles[idxs[0]] = list(rect)
+            bubbles[idxs[0]] = {"rect": list(rect), "chords": _chords(solid)}
         else:
             _split_rect(rect, idxs, blocks, bubbles)
     return modified
+
+
+def _chords(solid) -> list | None:
+    """Horizontal cross-sections [y, x_left, x_right] of the bubble
+    interior, top to bottom, eroded for breathing room. The frontend
+    flows text into this shape (CSS shape-outside floats) so line breaks
+    follow the bubble's curve. Narrow lead-in/out rows — bubble tails,
+    pointy tips — are trimmed so text stays in the body."""
+    k = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * SHAPE_MARGIN + 1, 2 * SHAPE_MARGIN + 1))
+    er = cv2.erode(solid, k)
+    ys = np.nonzero(er.any(axis=1))[0]
+    if len(ys) < 8:
+        return None
+    rows = []
+    for y in np.linspace(ys[0], ys[-1], CHORD_ROWS):
+        xs = np.nonzero(er[int(round(y))])[0]
+        if len(xs):
+            rows.append([int(round(y)), int(xs[0]), int(xs[-1])])
+    widest = max((r[2] - r[1] for r in rows), default=0)
+    while rows and rows[0][2] - rows[0][1] < 0.3 * widest:
+        rows.pop(0)
+    while rows and rows[-1][2] - rows[-1][1] < 0.3 * widest:
+        rows.pop()
+    return rows if len(rows) >= 3 else None
 
 
 def _pick_label(labels, stats, box, w: int, h: int) -> int:
@@ -193,7 +222,7 @@ def _split_rect(rect, idxs: list[int], blocks: list[dict], bubbles: list) -> Non
         r = list(rect)
         r[axis] = round(pos)
         r[axis + 2] = round(pos + seg) - 2
-        bubbles[i] = r
+        bubbles[i] = {"rect": r}  # shared bubble: no shape flow, rect only
         pos += seg
 
 
