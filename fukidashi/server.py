@@ -133,13 +133,38 @@ def reader_data(slug: str, language: str = "English"):
         if p:
             trs = translations.get(str(n), [])
             bubs = bubbles.get(n, [])
+            tr = lambda i: trs[i] if i < len(trs) else None
+            emitted = set()
             for i, b in enumerate(p["blocks"]):
+                bub = bubs[i] if i < len(bubs) else None
+                if bub and bub.get("group"):
+                    # blocks sharing a bubble are one utterance split
+                    # across JP columns: emit a single merged block over
+                    # the whole bubble, translations joined in reading
+                    # order, so the reader typesets one paragraph
+                    if i in emitted:
+                        continue
+                    g = bub["group"]
+                    emitted.update(g)
+                    members = [p["blocks"][j] for j in g]
+                    parts = [tr(j) for j in g]
+                    blocks.append({
+                        "box": [min(m["box"][0] for m in members),
+                                min(m["box"][1] for m in members),
+                                max(m["box"][2] for m in members),
+                                max(m["box"][3] for m in members)],
+                        "vertical": members[0]["vertical"],
+                        "text": " ".join(m["text"] for m in members),
+                        "translation": " ".join(t for t in parts if t) or None,
+                        "bubble": {"rect": bub["rect"], "chords": bub["chords"]},
+                    })
+                    continue
                 blocks.append({
                     "box": b["box"],
                     "vertical": b["vertical"],
                     "text": b["text"],
-                    "translation": trs[i] if i < len(trs) else None,
-                    "bubble": bubs[i] if i < len(bubs) else None,
+                    "translation": tr(i),
+                    "bubble": bub,
                 })
         pages.append({
             "width": p["width"] if p else None,

@@ -30,6 +30,7 @@ from . import library
 WHITE_THRESH = 200         # gray level counted as bubble paper
 MAX_AREA_FRAC = 0.35       # white region bigger than this share of the page = leak
 MIN_TEXTBOX_OVERLAP = 0.7  # bubble bbox must cover this much of the text box
+MIN_FILL_RATIO = 0.8       # white share of the filled contour: less = art holes, not a bubble
 SEED_OFFSET = 6            # px outside the text box to probe for bubble interior
 RECT_MARGIN = 3            # breathing room (px) between text rect and bubble edge
 SHAPE_MARGIN = 5           # erosion (px) between flowed text and bubble edge
@@ -88,17 +89,49 @@ def _detect_page(img, blocks: list[dict], bubbles: list) -> bool:
         # solid region to inscribe the text rect into
         solid = np.zeros_like(comp)
         cv2.drawContours(solid, [contour], -1, 1, cv2.FILLED)
+        # a bubble interior is solid white except its text strokes; a big
+        # hole means we grabbed background around art (e.g. the panel
+        # behind an SFX cluster) — filling that would erase the drawing
+        if comp.sum() < MIN_FILL_RATIO * solid.sum():
+            continue
         rect = _inscribed_rect(solid)
+        chords = _chords(solid) if rect else None
+        if rect is None:
+            # chained thought-clouds: the centroid lands in a crevice
+            # between lobes where nothing fits — centre on the text
+            # instead, and skip shape flow (chain interiors aren't
+            # row-convex, so chords would run text over the crevices)
+            boxes = [blocks[i]["box"] for i in idxs]
+            cx = sum(b[0] + b[2] for b in boxes) / (2 * len(boxes))
+            cy = sum(b[1] + b[3] for b in boxes) / (2 * len(boxes))
+            rect = _inscribed_rect(solid, center=(cx, cy))
         if rect is None:
             continue
         cv2.drawContours(img, [contour], -1, (255, 255, 255), cv2.FILLED)
         modified = True
-        chords = _chords(solid)
         if len(idxs) == 1:
             bubbles[idxs[0]] = {"rect": list(rect), "chords": chords}
         else:
-            _split_bubble(rect, chords, idxs, blocks, bubbles)
+            # several OCR blocks in one bubble: Japanese splits a single
+            # utterance across columns, so don't carve the bubble up —
+            # keep the whole region and record reading order; the reader
+            # joins the translations into one paragraph
+            grp = {"rect": list(rect), "chords": chords,
+                   "group": _reading_order(idxs, blocks)}
+            for i in idxs:
+                bubbles[i] = grp
     return modified
+
+
+def _reading_order(idxs: list[int], blocks: list[dict]) -> list[int]:
+    """Manga reading order within a bubble: vertical columns go right to
+    left (ties top to bottom); horizontal lines go top to bottom."""
+    def center(i):
+        x1, y1, x2, y2 = blocks[i]["box"]
+        return (x1 + x2) / 2, (y1 + y2) / 2
+    if sum(1 for i in idxs if blocks[i]["vertical"]) * 2 >= len(idxs):
+        return sorted(idxs, key=lambda i: (-center(i)[0], center(i)[1]))
+    return sorted(idxs, key=lambda i: (center(i)[1], -center(i)[0]))
 
 
 def _chords(solid) -> list | None:
@@ -158,17 +191,20 @@ def _valid(st, box, w: int, h: int) -> bool:
     return ix * iy >= MIN_TEXTBOX_OVERLAP * tb
 
 
-def _inscribed_rect(solid) -> tuple | None:
-    """Best rectangle centered on the bubble's centroid that fits
-    entirely inside it. Sweeps aspect ratios (binary search on scale per
-    aspect, integral image for the all-inside test) and scores candidates
-    by area with a penalty on tall-narrow shapes — translations are
-    horizontal text, so a wide band through a tall bubble beats a sliver
-    that matches the bubble's own aspect."""
-    m = cv2.moments(solid, binaryImage=True)
-    if not m["m00"]:
-        return None
-    cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+def _inscribed_rect(solid, center: tuple | None = None) -> tuple | None:
+    """Best rectangle centered on the bubble's centroid (or the given
+    centre) that fits entirely inside it. Sweeps aspect ratios (binary
+    search on scale per aspect, integral image for the all-inside test)
+    and scores candidates by area with a penalty on tall-narrow shapes —
+    translations are horizontal text, so a wide band through a tall
+    bubble beats a sliver that matches the bubble's own aspect."""
+    if center is not None:
+        cx, cy = center
+    else:
+        m = cv2.moments(solid, binaryImage=True)
+        if not m["m00"]:
+            return None
+        cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
     ys, xs = np.nonzero(solid)
     bw, bh = int(xs.max() - xs.min()), int(ys.max() - ys.min())
     ii = cv2.integral(solid)
@@ -202,46 +238,6 @@ def _inscribed_rect(solid) -> tuple | None:
     mx = min(RECT_MARGIN, (x2 - x1) // 4)
     my = min(RECT_MARGIN, (y2 - y1) // 4)
     return (x1 + mx, y1 + my, x2 - mx, y2 - my)
-
-
-def _split_bubble(rect, chords, idxs: list[int], blocks: list[dict], bubbles: list) -> None:
-    """Several OCR blocks share one bubble (joined bubbles): each block
-    becomes its own placement region, anchored at the original cluster's
-    position — boundaries fall at the midpoints between neighbouring
-    cluster centres along the axis the clusters spread over. The bubble's
-    chords are clipped to each region so every cluster still wraps to the
-    bubble's curve. Falls back to text-length slicing if the anchored
-    boundaries collapse (clusters bunched at one end)."""
-    centers = {i: ((blocks[i]["box"][0] + blocks[i]["box"][2]) / 2,
-                   (blocks[i]["box"][1] + blocks[i]["box"][3]) / 2) for i in idxs}
-    spread_x = max(c[0] for c in centers.values()) - min(c[0] for c in centers.values())
-    spread_y = max(c[1] for c in centers.values()) - min(c[1] for c in centers.values())
-    axis = 0 if spread_x >= spread_y else 1
-    ordered = sorted(idxs, key=lambda i: centers[i][axis])
-    lo, hi = rect[axis], rect[axis + 2]
-    cuts = [round((centers[a][axis] + centers[b][axis]) / 2)
-            for a, b in zip(ordered, ordered[1:])]
-    bounds = [lo] + [min(hi, max(lo, c)) for c in cuts] + [hi]
-    if any(b2 - b1 < 16 for b1, b2 in zip(bounds, bounds[1:])):
-        weights = [max(1, len(blocks[i]["text"])) for i in ordered]
-        total, pos, bounds = sum(weights), float(lo), [lo]
-        for w in weights:
-            pos += (hi - lo) * w / total
-            bounds.append(round(pos))
-    for k, i in enumerate(ordered):
-        s1, s2 = bounds[k], bounds[k + 1] - 2
-        seg = list(rect)
-        seg[axis], seg[axis + 2] = s1, s2
-        sub = None
-        if chords:
-            if axis == 0:
-                sub = [[y, max(xl, s1), min(xr, s2)] for y, xl, xr in chords
-                       if min(xr, s2) - max(xl, s1) >= 12]
-            else:
-                sub = [[y, xl, xr] for y, xl, xr in chords if s1 <= y <= s2]
-            if len(sub) < 3:
-                sub = None
-        bubbles[i] = {"rect": seg, "chords": sub}
 
 
 def _imread(path):

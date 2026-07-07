@@ -584,7 +584,7 @@ function fitShaped(ov) {
     const mid = Math.ceil((lo + hi) / 2);
     if (fits(mid)) lo = mid; else hi = mid - 1;
   }
-  ov.style.fontSize = lo + 'px';
+  ov.style.fontSize = readableFloor(ov, lo) + 'px';
   // centre vertically: shelf text down to the middle of the leftover
   // space; convex bubbles only widen toward the middle so this almost
   // always still fits — back off by halves when it doesn't
@@ -606,14 +606,31 @@ function fitText(ov) {
   let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
-    const r = span.getBoundingClientRect();
-    return r.height <= ov.clientHeight * 0.84 + 0.5 && r.width <= ov.clientWidth * 0.84 + 0.5;
+    // measure the rendered lines, not the span box: a wrapped flex item
+    // stretches to the container width even when balanced lines are short
+    const range = document.createRange();
+    range.selectNodeContents(span);
+    const rects = [...range.getClientRects()];
+    if (!rects.length) return true;
+    const w = Math.max(...rects.map(r => r.width));
+    const h = Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top));
+    return h <= ov.clientHeight * 0.84 + 0.5 && w <= ov.clientWidth * 0.84 + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     if (fits(mid)) lo = mid; else hi = mid - 1;
   }
-  ov.style.fontSize = lo + 'px';
+  ov.style.fontSize = readableFloor(ov, lo) + 'px';
+}
+
+/* a fit that bottomed out below readable size means the region was too
+   small for the text — better to overflow the region a little than to
+   ship microscopic type */
+function readableFloor(ov, size) {
+  if (size >= 10) return size;
+  ov.style.overflow = 'visible';
+  ov.style.zIndex = 4;
+  return 10;
 }
 
 function showTip(e, text) {
