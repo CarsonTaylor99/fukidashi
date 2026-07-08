@@ -60,11 +60,16 @@ def start_translate(slug: str, language: str = Form("English"), force: bool = Fo
         raise HTTPException(503, "Ollama is not reachable")
     lang = language.strip() or "English"
     if force:
-        # discard bible + translations so a model/prompt change takes
-        # effect (translation otherwise resumes past finished pages)
-        (library.volume_dir(slug) / "bible.json").unlink(missing_ok=True)
-        lang_file = f"translations.{lang.lower().replace(' ', '-')}.json"
-        (library.volume_dir(slug) / lang_file).unlink(missing_ok=True)
+        # full redo: OCR/bubbles too, so detector improvements reach old
+        # volumes. New OCR shifts block indices, which would misalign
+        # every stored translation — so all languages go, not just this
+        # one (translation otherwise resumes past finished pages).
+        d = library.volume_dir(slug)
+        for name in ("ocr.json", "bubbles.json", "bible.json"):
+            (d / name).unlink(missing_ok=True)
+        for p in d.glob("translations.*.json"):
+            p.unlink()
+        shutil.rmtree(d / "cleaned", ignore_errors=True)
     try:
         pipeline.start(slug, lang)
     except RuntimeError as e:

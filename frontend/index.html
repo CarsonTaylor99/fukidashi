@@ -6,8 +6,27 @@
 <title>fukidashi 吹き出し</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Comic+Neue:wght@700&family=Permanent+Marker&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
 <style>
+/* dialogue lettering: Back Issues BB (Blambot, free indie license) if the
+   user has dropped it into frontend/fonts/ — see fonts/README.md — else
+   the bundled Komika Text (Apostrophic Labs freeware) */
+@font-face {
+  font-family: "Back Issues BB"; font-display: swap;
+  src: url(/fonts/BackIssuesBB.ttf), url(/fonts/BackIssuesBB.otf);
+}
+@font-face {
+  font-family: "Back Issues BB"; font-weight: 700; font-display: swap;
+  src: url(/fonts/BackIssuesBB-Bold.ttf), url(/fonts/BackIssuesBB-Bold.otf);
+}
+@font-face {
+  font-family: "Komika Text"; font-display: swap;
+  src: url(/fonts/KomikaText.ttf);
+}
+@font-face {
+  font-family: "Komika Text"; font-weight: 700; font-display: swap;
+  src: url(/fonts/KomikaText-Bold.ttf);
+}
 :root {
   --paper: #f6f1e7;
   --paper-deep: #ece4d2;
@@ -19,6 +38,7 @@
   --room: #14120f;         /* reader surround */
   --serif: "Shippori Mincho", "Hiragino Mincho ProN", serif;
   --sans: "Zen Kaku Gothic New", "Hiragino Sans", sans-serif;
+  --letter: "Back Issues BB", "Komika Text", "Comic Sans MS", var(--sans);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { height: 100%; }
@@ -126,6 +146,19 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 #page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); }
 #page-img { display: block; max-height: calc(100vh - 90px); max-width: 100%; user-select: none; }
 
+/* long-strip mode: every page in one vertical scroll, manga-site style */
+#strip { display: none; }
+#reader.strip #page-wrap, #reader.strip .edge { display: none; }
+#reader.strip #strip {
+  display: block; position: absolute; inset: 0; overflow-y: auto;
+  padding: 14px 12px 60px;
+}
+.strip-page {
+  position: relative; width: min(100%, 840px); margin: 0 auto 14px;
+  box-shadow: 0 0 40px rgba(0,0,0,.6);
+}
+.strip-page img { display: block; width: 100%; background: #201d18; user-select: none; }
+
 /* typesetting: pages whose bubbles were detected are served pre-cleaned
    (original text painted out server-side) and the translation is lettered
    into the real bubble's inscribed rect. Blocks without a detected bubble
@@ -138,8 +171,10 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 .ov {
   position: absolute; display: flex; align-items: center; justify-content: center;
   color: #111; text-align: center; cursor: help;
-  font-family: "Comic Neue", "Comic Sans MS", var(--sans);
-  font-weight: 700; line-height: 1.08; letter-spacing: .01em;
+  font-family: var(--letter);
+  /* comic lettering fonts carry their weight at 400; 1.16 leading is the
+     lettering norm — tighter reads cramped, looser falls apart in ovals */
+  font-weight: 400; line-height: 1.16; letter-spacing: .02em;
   overflow: hidden; border-radius: 8px; overflow-wrap: break-word;
 }
 .ov span { text-wrap: balance; }
@@ -156,7 +191,7 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 .ov.sfx {
   display: block; overflow: visible; width: max-content;
   transform: translate(-50%, -50%); border-radius: 0;
-  font-family: "Permanent Marker", "Comic Neue", cursive; font-weight: 400;
+  font-family: "Permanent Marker", "Komika Text", cursive; font-weight: 400;
   letter-spacing: .04em; line-height: 1.05;
   text-shadow: -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff,
                2px 2px 0 #fff, 0 0 6px #fff;
@@ -226,6 +261,7 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
     <span class="title" id="reader-title"></span>
     <span class="spacer"></span>
     <select id="lang-sel" title="translation language"></select>
+    <button id="mode-btn" title="toggle long-strip view (v)">Long strip</button>
     <button id="ov-btn" class="on" title="toggle translations (t)">Translation</button>
     <button id="bible-btn" title="story bible (b)">Bible</button>
     <span id="page-ind"></span>
@@ -236,6 +272,7 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
     <div id="page-wrap">
       <img id="page-img" alt="manga page">
     </div>
+    <div id="strip"></div>
     <div id="bible-drawer">
       <h2>Story bible 設定資料</h2>
       <div class="sub">built by the context pass before translation</div>
@@ -291,7 +328,7 @@ function volCard(v) {
     <div class="row">
       <input class="lang" value="English" title="target language">
       <button class="btn translate">Translate</button>
-      <label style="font-size:.78rem;color:var(--ink-soft)" title="discard existing translation and bible, e.g. after a model change">
+      <label style="font-size:.78rem;color:var(--ink-soft)" title="redo everything from scratch — OCR, bubbles, bible and all translations — e.g. after a model or detector change">
         <input type="checkbox" class="force"> redo</label>
       ${v.languages.map(l => `<button class="btn ghost read" data-lang="${esc(l)}">Read · ${esc(l)}</button>`).join('')}
       <button class="del" title="delete volume">delete</button>
@@ -364,7 +401,8 @@ $('#import-btn').onclick = async () => {
 };
 
 /* ---------- reader ---------- */
-const R = { slug: null, data: null, page: 0, lang: 'English' };
+const R = { slug: null, data: null, page: 0, lang: 'English',
+            mode: localStorage.getItem('fukidashi-view') || 'single' };
 
 async function openReader(slug, lang) {
   R.slug = slug; R.lang = lang;
@@ -383,7 +421,7 @@ async function openReader(slug, lang) {
   }
   document.body.classList.remove('library-mode');
   $('#reader').classList.add('open');
-  showPage(0);
+  applyMode();
 }
 $('#lang-sel').onchange = e => openReader(R.slug, e.target.value);
 
@@ -399,24 +437,95 @@ function pageSrc(n) {
   return `/api/volumes/${R.slug}/${useCleaned(n) ? 'cleaned' : 'pages'}/${n}`;
 }
 
+/* mode: 'single' (one page, edge/arrow nav) or 'strip' (all pages in one
+   vertical scroll) — the two views manga sites offer */
+function applyMode() {
+  const strip = R.mode === 'strip';
+  $('#reader').classList.toggle('strip', strip);
+  $('#mode-btn').classList.toggle('on', strip);
+  $('#strip').innerHTML = '';
+  if (strip) { buildStrip(); jumpStrip(R.page, false); updateInd(); }
+  else showPage(R.page);
+}
+function toggleMode() {
+  R.mode = R.mode === 'strip' ? 'single' : 'strip';
+  localStorage.setItem('fukidashi-view', R.mode);
+  applyMode();
+}
+
+function updateInd() {
+  $('#page-ind').textContent = `${R.page + 1} / ${R.data.page_count}`;
+}
+
+/* one placeholder per page (correct aspect ratio, so scroll geometry is
+   stable); images load and letter themselves as they near the viewport */
+function buildStrip() {
+  const box = $('#strip');
+  for (let n = 0; n < R.data.page_count; n++) {
+    const p = R.data.pages[n];
+    const d = document.createElement('div');
+    d.className = 'strip-page'; d.dataset.n = n;
+    const img = document.createElement('img');
+    img.alt = `page ${n + 1}`;
+    img.style.aspectRatio = p && p.width ? `${p.width} / ${p.height}` : '7 / 10';
+    d.appendChild(img);
+    box.appendChild(d);
+    stripIO.observe(d);
+  }
+}
+const stripIO = new IntersectionObserver(entries => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    stripIO.unobserve(e.target);
+    const n = +e.target.dataset.n, img = e.target.firstChild;
+    img.onload = () => renderOverlays(e.target, n);
+    img.src = pageSrc(n);
+  }
+}, { root: $('#strip'), rootMargin: '200% 0%' });
+
+function jumpStrip(n, smooth = true) {
+  const d = $('#strip').children[n];
+  if (d) d.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+}
+
+/* the page indicator follows whichever page crosses mid-viewport */
+$('#strip').onscroll = () => {
+  const box = $('#strip');
+  const mid = box.scrollTop + box.clientHeight / 2;
+  let n = 0;
+  for (const d of box.children) {
+    if (d.offsetTop > mid) break;
+    n = +d.dataset.n;
+  }
+  if (n !== R.page) { R.page = n; updateInd(); }
+};
+
+function nav(delta) {
+  if (R.mode === 'strip') {
+    R.page = Math.max(0, Math.min(R.page + delta, R.data.page_count - 1));
+    updateInd();
+    jumpStrip(R.page);
+  } else showPage(R.page + delta);
+}
+
 function showPage(n) {
   const d = R.data;
   R.page = Math.max(0, Math.min(n, d.page_count - 1));
-  $('#page-ind').textContent = `${R.page + 1} / ${d.page_count}`;
+  updateInd();
   const img = $('#page-img');
   img.src = pageSrc(R.page);
-  document.querySelectorAll('.ov, .ov-mask').forEach(o => o.remove());
-  img.onload = () => renderOverlays();
+  document.querySelectorAll('#page-wrap .ov, #page-wrap .ov-mask').forEach(o => o.remove());
+  img.onload = () => renderOverlays($('#page-wrap'), R.page);
   // preload neighbours
   for (const k of [R.page + 1, R.page - 1])
     if (k >= 0 && k < d.page_count) new Image().src = pageSrc(k);
 }
 
-function renderOverlays() {
-  const page = R.data.pages[R.page];
+function renderOverlays(wrap, n) {
+  const page = R.data.pages[n];
   if (!page || !page.width) return;
-  const cleaned = useCleaned(R.page);
-  const wrap = $('#page-wrap');
+  const cleaned = useCleaned(n);
+  wrap.querySelectorAll('.ov, .ov-mask').forEach(o => o.remove());
   const pct = (v, total) => (v / total * 100) + '%';
   const place = (el, x, y, w, h) => {
     el.style.left = pct(x, page.width);
@@ -507,7 +616,10 @@ function sfxOverlay(b, page) {
   const chars = Math.max(1, [...b.text].length);
   const pgFont = Math.sqrt((x2 - x1) * (y2 - y1) / chars);
   ov._refit = () => {
-    const scale = $('#page-img').clientWidth / page.width;
+    // scale off this overlay's own page image (strip mode has many)
+    const img = ov.parentElement && ov.parentElement.querySelector('img');
+    if (!img) return;
+    const scale = img.clientWidth / page.width;
     ov.style.fontSize = Math.max(11, Math.min(64, pgFont * scale * 0.95)) + 'px';
   };
   ov.onmousemove = e => showTip(e, b.text);
@@ -531,8 +643,16 @@ function shapedOverlay(b, chords, place) {
   ov.append(l, r, span);
   const W = x2 - x1, H = y2 - y1, half = W / 2;
   const clamp = v => Math.max(0, Math.min(100, v));
-  const pts = chords.map(([y, xl, xr]) => [(y - y1) / H * 100,
-    clamp((xl - x1) / half * 100), clamp((xr - x1 - half) / half * 100)]);
+  // breathing room: pull each row off the bubble wall proportionally to
+  // the bubble's size (the server's fixed-px erosion is nothing on a
+  // high-res scan), but never past the row's own midline
+  const inset = 0.035 * W;
+  const pts = chords.map(([y, xl, xr]) => {
+    const il = Math.min(xl + inset, (xl + xr) / 2 - 4);
+    const ir = Math.max(xr - inset, (xl + xr) / 2 + 4);
+    return [(y - y1) / H * 100,
+      clamp((il - x1) / half * 100), clamp((ir - x1 - half) / half * 100)];
+  });
   ov._shape = shelfPct => {
     // a shelf excludes the full width above shelfPct (vertical centering);
     // the contour is interpolated at the shelf line so any shelf height
@@ -646,16 +766,17 @@ function showTip(e, text) {
 function hideTip() { $('#orig-tip').style.display = 'none'; }
 
 /* manga is RTL: left edge / ← = next page */
-document.querySelector('.edge.left').onclick = () => showPage(R.page + 1);
-document.querySelector('.edge.right').onclick = () => showPage(R.page - 1);
+document.querySelector('.edge.left').onclick = () => nav(+1);
+document.querySelector('.edge.right').onclick = () => nav(-1);
 $('#back-btn').onclick = closeReader;
+$('#mode-btn').onclick = toggleMode;
 $('#ov-btn').onclick = toggleOv;
 $('#bible-btn').onclick = () => $('#bible-drawer').classList.toggle('open');
 
 function toggleOv() {
   $('#reader').classList.toggle('hide-ov');
   $('#ov-btn').classList.toggle('on');
-  showPage(R.page);  // cleaned vs original image differs per mode
+  applyMode();  // cleaned vs original image differs per mode
 }
 function closeReader() {
   $('#reader').classList.remove('open');
@@ -667,9 +788,16 @@ function closeReader() {
 
 addEventListener('keydown', e => {
   if (!$('#reader').classList.contains('open')) return;
-  if (e.key === 'ArrowLeft') showPage(R.page + 1);
-  else if (e.key === 'ArrowRight') showPage(R.page - 1);
+  if (e.key === 'ArrowLeft') nav(+1);
+  else if (e.key === 'ArrowRight') nav(-1);
+  else if (R.mode === 'strip' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    // the strip div is never focused, so scroll it by hand
+    $('#strip').scrollBy({ top: (e.key === 'ArrowDown' ? 1 : -1) * innerHeight * 0.8,
+                           behavior: 'smooth' });
+    e.preventDefault();
+  }
   else if (e.key === 't') toggleOv();
+  else if (e.key === 'v') toggleMode();
   else if (e.key === 'b') $('#bible-drawer').classList.toggle('open');
   else if (e.key === 'Escape') closeReader();
 });

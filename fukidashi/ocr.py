@@ -1,67 +1,116 @@
-"""OCR a volume with mokuro (comic-text-detector + manga-ocr).
+"""OCR a volume with mokuro's engine (comic-text-detector + manga-ocr).
 
-mokuro is run as a subprocess against the volume's pages/ directory and
-produces pages.mokuro JSON next to it. We parse that into our own
-ocr.json: one entry per page, blocks in reading order with pixel boxes.
+mokuro is used as a library rather than a subprocess: the CLI hardwires
+detector thresholds that drop exactly the blocks we care about. Two
+knobs matter for SFX:
+
+  * the YOLO block detector's confidence threshold (0.4 by default) —
+    stylized action noises score low and vanish before OCR ever runs;
+  * the line segmenter's score filter (hardcoded 0.6) — big single-kanji
+    lettering often yields a detected *block* whose line pass finds
+    nothing, so the block comes back with empty text.
+
+We lower the first and, for blocks that still come back textless, OCR
+the raw block crop directly with manga-ocr (which reads vertical and
+horizontal text natively). Output is the same ocr.json as before: one
+entry per page, blocks in reading order with pixel boxes.
 """
 
-import json
-import subprocess
+import re
 import sys
-from pathlib import Path
+
+from PIL import Image
 
 from . import library
 
-MOKURO_BIN = Path(sys.executable).parent / "mokuro"
+CONF_THRESH = 0.3   # detector default is 0.4; SFX lettering scores low
+CROP_PAD = 8        # px of context around a block for fallback OCR
+# fallback OCR on a false-positive block (art, screentone) yields dots
+# and dashes; demand at least one letter, digit, or kana/kanji to keep it
+_REAL_TEXT = re.compile(r"[0-9A-Za-z぀-ヿ㐀-鿿０-ｚｦ-ﾟ]")
+
+_engine = None
+
+
+def _get_engine(log):
+    global _engine
+    if _engine is None:
+        log("loading OCR models (first run downloads them)...")
+        from mokuro.manga_page_ocr import MangaPageOcr
+        _engine = MangaPageOcr()
+        _engine.text_detector.conf_thresh = CONF_THRESH
+    return _engine
 
 
 def run(slug: str, log=print) -> list[dict]:
-    vol = library.volume_dir(slug)
-    pages_dir = vol / "pages"
-    log("running mokuro (first run downloads OCR models)...")
-    proc = subprocess.run(
-        [str(MOKURO_BIN), str(pages_dir), "--disable_confirmation", "--ignore_errors"],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"mokuro failed:\n{proc.stderr[-2000:]}")
+    files = library.page_files(slug)
+    if not files:
+        raise RuntimeError("volume has no page images")
+    mpo = _get_engine(log)
 
-    mokuro_json = vol / "pages.mokuro"
-    if not mokuro_json.exists():
-        raise RuntimeError(f"mokuro produced no output at {mokuro_json}")
-    data = json.loads(mokuro_json.read_text())
-
-    pages = []
-    for i, page in enumerate(data.get("pages", [])):
+    pages, rescued = [], 0
+    for i, path in enumerate(files):
         blocks = []
-        for b in page.get("blocks", []):
-            text = "".join(b.get("lines", []))
-            if not text.strip():
-                continue
-            blocks.append({
-                "box": b["box"],  # [x1, y1, x2, y2] pixels
-                "vertical": b.get("vertical", True),
-                "font_size": b.get("font_size"),
-                "text": text,
-            })
-        # mokuro emits blocks in detection order; sort into manga reading
-        # order: right-to-left by column, top-to-bottom within a column.
+        width = height = None
+        try:
+            result = mpo(str(path))
+            width, height = result["img_width"], result["img_height"]
+            for b in result["blocks"]:
+                box = [int(v) for v in b["box"]]
+                text = "".join(b["lines"])
+                if not text.strip():
+                    # detected block, failed line pass: single-kanji SFX
+                    # territory — read the whole crop directly
+                    text = _ocr_box(mpo, path, box, width, height)
+                    if not _REAL_TEXT.search(text):
+                        continue
+                    rescued += 1
+                blocks.append({
+                    "box": box,
+                    "vertical": bool(b.get("vertical", True)),
+                    "font_size": _num(b.get("font_size")),
+                    "text": text,
+                })
+        except Exception as e:
+            log(f"page {i + 1}: OCR failed ({e}) — skipping")
+        # detection order → manga reading order: right-to-left by
+        # column, top-to-bottom within a column.
         blocks.sort(key=lambda b: (-b["box"][2], b["box"][1]))
         pages.append({
             "page": i,
-            "img_path": page.get("img_path", ""),
-            "width": page.get("img_width"),
-            "height": page.get("img_height"),
+            "img_path": path.name,
+            "width": width,
+            "height": height,
             "blocks": blocks,
         })
+        log(f"OCR page {i + 1}/{len(files)}: {len(blocks)} blocks")
 
-    # mokuro exits 0 even when every page failed (e.g. a missing
-    # dependency) — an empty result is an error, not a success.
-    if not pages:
-        raise RuntimeError(
-            "mokuro processed no pages — check its log:\n" + proc.stderr[-1000:]
-        )
     library.save_json(slug, "ocr.json", pages)
     n_blocks = sum(len(p["blocks"]) for p in pages)
-    log(f"OCR done: {len(pages)} pages, {n_blocks} text blocks")
+    note = f" ({rescued} rescued by whole-block pass)" if rescued else ""
+    log(f"OCR done: {len(pages)} pages, {n_blocks} text blocks{note}")
     return pages
+
+
+def _ocr_box(mpo, path, box, width: int, height: int) -> str:
+    from mokuro.utils import imread
+    img = imread(str(path))
+    if img is None:
+        return ""
+    x1, y1, x2, y2 = box
+    x1, y1 = max(0, x1 - CROP_PAD), max(0, y1 - CROP_PAD)
+    x2, y2 = min(width, x2 + CROP_PAD), min(height, y2 + CROP_PAD)
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return ""
+    # mokuro feeds manga-ocr BGR crops unconverted; match it
+    return mpo.mocr(Image.fromarray(img[y1:y2, x1:x2]))
+
+
+def _num(v):
+    return None if v is None else float(v)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: python -m fukidashi.ocr <slug>")
+    run(sys.argv[1])
