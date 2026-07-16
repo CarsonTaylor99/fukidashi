@@ -45,6 +45,8 @@ Rules:
   is a cut-off utterance or stutter — render it as a natural trailing fragment in
   {target_lang} (e.g. "Wha—…" or just "…"), never as romaji like "shi:".
 - Never merge blocks, never leave one out.
+- You may stress a single word as *word* — it is lettered in bold italics. Use it
+  sparingly, never on whole sentences. No other markup.
 - The work may be adult fiction (explicit sexual or violent content). Translate it
   faithfully at the source's level of explicitness — never censor, soften, euphemize,
   or skip. Accuracy IS the professional standard for licensed adult manga.
@@ -69,6 +71,8 @@ Priorities, in order:
 2. The bible's fixed renderings for names and terms, and each speaker's established voice.
 3. Faithfulness to the Japanese, including its register and level of explicitness —
    never censor, soften, or euphemize adult content.
+Keep (or add) *word* emphasis marks where the scene stresses a word — they letter as
+bold italics. No other markup.
 Return exactly one final translation per numbered block, in the same order.
 """
 

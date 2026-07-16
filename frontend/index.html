@@ -180,6 +180,9 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
      their longest word get condensed via scaleX in readableFloor instead */
 }
 .ov span { text-wrap: balance; }
+/* the translator marks stressed words as *word*; letter them the way
+   comics do — bold italics */
+.ov em { font-style: italic; font-weight: 700; }
 /* shaped flow: two invisible floats carve everything outside the bubble
    contour out of the line boxes (shape-outside), so text wraps to the
    bubble's own curve — long lines through the belly, short at the crown */
@@ -592,7 +595,7 @@ function renderOverlays(wrap, n, forExport = false) {
       const ov = document.createElement('div');
       ov.className = 'ov';
       place(ov, bx1, by1, bx2 - bx1, by2 - by1);
-      ov.appendChild(document.createElement('span')).textContent = b.translation;
+      setLetteringText(ov.appendChild(document.createElement('span')), b.translation);
       ov.onmousemove = e => showTip(e, b.text);
       ov.onmouseleave = hideTip;
       wrap.appendChild(ov);
@@ -643,7 +646,7 @@ function renderOverlays(wrap, n, forExport = false) {
     const ov = document.createElement('div');
     ov.className = 'ov' + (b.translation == null ? ' pending' : '');
     place(ov, lx, ly, lw, lh);
-    ov.appendChild(document.createElement('span')).textContent = b.translation ?? '';
+    setLetteringText(ov.appendChild(document.createElement('span')), b.translation ?? '');
     ov.onmousemove = e => showTip(e, b.text);
     ov.onmouseleave = hideTip;
     wrap.appendChild(ov);
@@ -663,7 +666,7 @@ function captionOverlay(b, page) {
   const below = y2 + gap < page.height * 0.97;
   ov.style.top = ((below ? y2 + gap : y1 - gap) / page.height * 100) + '%';
   if (!below) ov.style.transform = 'translate(-50%, -100%)';
-  ov.appendChild(document.createElement('span')).textContent = b.translation;
+  setLetteringText(ov.appendChild(document.createElement('span')), b.translation);
   ov._refit = () => {
     const img = ov.parentElement && ov.parentElement.querySelector('img');
     if (img) ov.style.fontSize =
@@ -685,7 +688,7 @@ function sfxOverlay(b, page) {
   // tall, so use the larger side), never more than 55% of the page
   const cap = Math.min(0.55 * page.width, 2.6 * Math.max(x2 - x1, (y2 - y1) * 0.6));
   ov.style.maxWidth = (cap / page.width * 100) + '%';
-  ov.appendChild(document.createElement('span')).textContent = b.translation;
+  setLetteringText(ov.appendChild(document.createElement('span')), b.translation);
   // proportional size: approximate source glyph size from box area per char
   const chars = Math.max(1, [...b.text].length);
   const pgFont = Math.sqrt((x2 - x1) * (y2 - y1) / chars);
@@ -713,7 +716,7 @@ function shapedOverlay(b, chords, place) {
   const l = document.createElement('div'), r = document.createElement('div');
   l.className = 'sp l'; r.className = 'sp r';
   const span = document.createElement('span');
-  span.textContent = b.translation;
+  setLetteringText(span, b.translation);
   ov.append(l, r, span);
   const W = x2 - x1, H = y2 - y1, half = W / 2;
   const clamp = v => Math.max(0, Math.min(100, v));
@@ -759,6 +762,21 @@ function shapedOverlay(b, chords, place) {
   ov.onmouseleave = hideTip;
   ov._refit = () => fitShaped(ov);
   return ov;
+}
+
+/* lettering text: translations mark stressed words as *word* — render
+   them as <em> (bold italic, the comic convention) instead of literal
+   asterisks; unmatched asterisks stay as-is */
+function setLetteringText(span, text) {
+  span.textContent = '';
+  String(text).split(/\*([^*\n]+)\*/).forEach((part, i) => {
+    if (!part) return;
+    if (i % 2) {
+      const em = document.createElement('em');
+      em.textContent = part;
+      span.appendChild(em);
+    } else span.appendChild(document.createTextNode(part));
+  });
 }
 
 /* client rects of the rendered text lines — the span's own box lies about
@@ -990,12 +1008,14 @@ function drawOv(ctx, ov, base) {
     ctx.translate(cx, 0); ctx.scale(cond, 1); ctx.translate(-cx, 0);
     ov.style.transform = `scaleX(${cond})`;
   }
-  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
   if ('letterSpacing' in ctx)
     ctx.letterSpacing = cs.letterSpacing === 'normal' ? '0px' : cs.letterSpacing;
   ctx.textBaseline = 'middle';
   ctx.fillStyle = cs.color;
   for (const ln of lines) {
+    // each run carries its own element: <em> runs draw in bold italic
+    const rs = getComputedStyle(ln.el);
+    ctx.font = `${rs.fontStyle} ${rs.fontWeight} ${rs.fontSize} ${rs.fontFamily}`;
     const x = ln.x - base.left, y = ln.y - base.top;
     if (sfx) {
       // the CSS text-shadow halo, as a rounded white stroke
@@ -1011,21 +1031,22 @@ function drawOv(ctx, ov, base) {
 }
 
 /* the browser's own line breaking, read back: client rect of every
-   character, grouped into lines by vertical position */
+   character, grouped into same-styled runs (an <em> word is its own run
+   so the canvas can switch to its bold-italic font) by vertical position */
 function extractLines(span) {
-  const lines = [];
+  const runs = [];
   const range = document.createRange();
   const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
   let cur = null;
   for (let node; (node = walker.nextNode()); ) {
-    const s = node.textContent;
+    const s = node.textContent, el = node.parentElement;
     for (let i = 0; i < s.length; i++) {
       range.setStart(node, i); range.setEnd(node, i + 1);
       const r = range.getClientRects()[0];
       if (!r || !r.width) continue;  // collapsed whitespace at a break
-      if (!cur || Math.abs(r.top - cur.top) > r.height / 2) {
-        cur = { text: '', x: r.left, top: r.top, bottom: r.bottom };
-        lines.push(cur);
+      if (!cur || el !== cur.el || Math.abs(r.top - cur.top) > r.height / 2) {
+        cur = { text: '', el, x: r.left, top: r.top, bottom: r.bottom, right: r.right };
+        runs.push(cur);
       } else if (r.left > cur.right + 0.5) {
         cur.text += ' ';  // the collapsed space between words
       }
@@ -1034,8 +1055,8 @@ function extractLines(span) {
       cur.bottom = Math.max(cur.bottom, r.bottom);
     }
   }
-  for (const l of lines) l.y = (l.top + l.bottom) / 2;
-  return lines;
+  for (const l of runs) l.y = (l.top + l.bottom) / 2;
+  return runs;
 }
 
 /* store-only zip: pages are already jpeg/png, compression would be noise */
