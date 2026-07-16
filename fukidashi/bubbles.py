@@ -16,7 +16,11 @@ region is the bubble interior. From it we derive:
 
 Blocks whose flood fails validation (open bubbles, SFX drawn over art,
 screentone backgrounds) get null and the frontend falls back to the old
-mask-and-guess overlay for just those blocks.
+mask-and-guess overlay for just those blocks — except that unmatched
+blocks whose neighborhood is still paper-white get {"whiteish": true}:
+they are dialogue in a bubble the flood couldn't validate (spiky scream
+bubbles, open bubbles), and the reader letters them as a masked label
+rather than as floating SFX over art.
 """
 
 import sys
@@ -30,8 +34,14 @@ from . import library
 WHITE_THRESH = 200         # gray level counted as bubble paper
 MAX_AREA_FRAC = 0.35       # white region bigger than this share of the page = leak
 MIN_TEXTBOX_OVERLAP = 0.7  # bubble bbox must cover this much of the text box
-MIN_FILL_RATIO = 0.8       # white share of the filled contour: less = art holes, not a bubble
+MIN_FILL_RATIO = 0.7       # white share of the filled contour: less = art holes,
+                           # not a bubble. 0.7, not 0.8: fat handwritten shout
+                           # lettering (わああっ！？) eats ~23% of its bubble,
+                           # while true art grabs measure far below this
 SEED_OFFSET = 6            # px outside the text box to probe for bubble interior
+WHITEISH = 0.55            # white share around an unmatched block that still
+                           # says "this text sits on paper, not on art" —
+                           # open/spiky bubbles the flood can't validate
 RECT_MARGIN = 3            # breathing room (px) between text rect and bubble edge
 SHAPE_MARGIN = 5           # erosion (px) between flowed text and bubble edge
 CHORD_ROWS = 18            # horizontal cross-sections sampled per bubble
@@ -120,6 +130,20 @@ def _detect_page(img, blocks: list[dict], bubbles: list) -> bool:
                    "group": _reading_order(idxs, blocks)}
             for i in idxs:
                 bubbles[i] = grp
+
+    # blocks still without a bubble: if the surrounding area is paper-
+    # white anyway (an open or spiky bubble the flood can't validate,
+    # or plain background), the text is dialogue on paper — mark it so
+    # the reader letters it as a masked label instead of floating SFX
+    pad = max(6, int(0.012 * max(h, w)))
+    for i, b in enumerate(blocks):
+        if bubbles[i] is not None:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in b["box"])
+        region = white[max(0, y1 - pad):min(h, y2 + pad),
+                       max(0, x1 - pad):min(w, x2 + pad)]
+        if region.size and region.mean() >= WHITEISH:
+            bubbles[i] = {"whiteish": True}
     return modified
 
 

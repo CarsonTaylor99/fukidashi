@@ -582,8 +582,9 @@ function renderOverlays(wrap, n, forExport = false) {
   for (const b of page.blocks) {
     // detected bubble on a cleaned page: the original text is already
     // erased server-side — flow into the bubble's actual shape when we
-    // have its cross-sections, else letter into the inscribed rect
-    if (cleaned && b.bubble) {
+    // have its cross-sections, else letter into the inscribed rect.
+    // (whiteish entries carry no rect: they take the label path below)
+    if (cleaned && b.bubble && (Array.isArray(b.bubble) || b.bubble.rect)) {
       const bub = Array.isArray(b.bubble) ? { rect: b.bubble } : b.bubble;
       if (bub.chords && bub.chords.length >= 3) {
         const ov = shapedOverlay(b, bub.chords, place);
@@ -615,9 +616,11 @@ function renderOverlays(wrap, n, forExport = false) {
     place(mask, x1, y1, bw, bh);
     wrap.appendChild(mask);
 
-    // fully-translated page but no bubble mask around this block: it's
-    // SFX / floating text drawn over art, not dialogue — handwritten
-    // lettering at the source spot, sized like the source glyphs
+    // fully-translated page, no bubble, and NOT sitting on paper-white:
+    // it's SFX / floating text drawn over art, not dialogue — handwritten
+    // lettering at the source spot, sized like the source glyphs.
+    // (whiteish blocks — open/spiky bubbles the detector couldn't
+    // validate — fall through to the masked label instead)
     if (cleaned && !b.bubble) {
       const ov = sfxOverlay(b, page);
       wrap.appendChild(ov);
@@ -642,6 +645,15 @@ function renderOverlays(wrap, n, forExport = false) {
     while (lw > bw + 1 && hits()) {
       lw = Math.max(bw, lw * 0.88);
       lx = Math.max(6, Math.min(cx - lw / 2, page.width - lw - 6));
+    }
+    // the label often reaches past the source column's mask (horizontal
+    // English over a vertical JP strip): white out the label's own
+    // footprint too, so lettering always sits on paper, never on art
+    if (b.translation != null) {
+      const m2 = document.createElement('div');
+      m2.className = 'ov-mask h';
+      place(m2, lx - lw * 0.06, ly - lh * 0.06, lw * 1.12, lh * 1.12);
+      wrap.appendChild(m2);
     }
     const ov = document.createElement('div');
     ov.className = 'ov' + (b.translation == null ? ' pending' : '');
