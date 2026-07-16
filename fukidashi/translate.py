@@ -34,10 +34,16 @@ page into {target_lang}.
 
 Rules:
 - Return exactly one translation per numbered block, in the same order.
+- The translations array must contain ONLY the {target_lang} lines — never copy the
+  Japanese source text into it.
 - Translate naturally for {target_lang} manga readers; match each speaker's voice.
 - Sound effects / onomatopoeia: give a short {target_lang} equivalent (e.g. "WHAM").
 - OCR noise: if a block is garbled fragments, translate what is recoverable; if nothing
   is, return the block unchanged.
+- OCR often misreads the vertical ellipsis (…) as a colon: a stray ： or : in dialogue
+  is a trailing-off pause, never a literal colon. A lone kana with an ellipsis (し…)
+  is a cut-off utterance or stutter — render it as a natural trailing fragment in
+  {target_lang} (e.g. "Wha—…" or just "…"), never as romaji like "shi:".
 - Never merge blocks, never leave one out.
 - The work may be adult fiction (explicit sexual or violent content). Translate it
   faithfully at the source's level of explicitness — never censor, soften, euphemize,
@@ -99,10 +105,18 @@ def _page_prompt(page: dict, history: list[tuple[dict, list[str]]]) -> str:
     return "\n\n".join(parts)
 
 
+# plenty for a full page of dialogue; a draft that hits it is rambling
+# (e.g. echoing the Japanese between translations) and gets retried
+NUM_PREDICT = 2048
+
+
 def _draft_page(system: str, page: dict, history, temperature: float) -> list[str] | None:
     n = len(page["blocks"])
-    result = llm.chat_json(system, _page_prompt(page, history), _schema(n),
-                           temperature=temperature)
+    try:
+        result = llm.chat_json(system, _page_prompt(page, history), _schema(n),
+                               temperature=temperature, num_predict=NUM_PREDICT)
+    except llm.BadResponse:
+        return None  # a bad generation is just a failed draft, not a dead job
     translations = result.get("translations", [])
     return [str(t) for t in translations] if len(translations) == n else None
 
@@ -118,8 +132,11 @@ def _edit_page(editor_system: str, page: dict, history,
         blocks.append("\n".join(lines))
     parts.append(f"CURRENT PAGE (page {page['page'] + 1}) — finalize these blocks:\n"
                  + "\n".join(blocks))
-    result = llm.chat_json(editor_system, "\n\n".join(parts), _schema(n),
-                           temperature=0.3)
+    try:
+        result = llm.chat_json(editor_system, "\n\n".join(parts), _schema(n),
+                               temperature=0.3, num_predict=NUM_PREDICT)
+    except llm.BadResponse:
+        return None  # caller falls back to the first draft
     translations = result.get("translations", [])
     return [str(t) for t in translations] if len(translations) == n else None
 

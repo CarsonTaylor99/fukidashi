@@ -27,7 +27,15 @@ def status():
 
 @app.get("/api/volumes")
 def volumes():
-    return library.list_volumes()
+    """Library listing, enriched with job state so a reloaded page can
+    re-attach to a running (or failed) job's progress stream — the full
+    event log replays from the start on reconnect."""
+    vols = library.list_volumes()
+    for v in vols:
+        job = pipeline.get(v["slug"])
+        if job:
+            v["job"] = {"running": not job.done, "error": bool(job.error)}
+    return vols
 
 
 @app.post("/api/import")
@@ -130,6 +138,11 @@ def reader_data(slug: str, language: str = "English"):
     translations = library.load_json(slug, lang_file) or {}
     bible = library.load_json(slug, "bible.json") or {}
     bubbles = {p["page"]: p["bubbles"] for p in library.load_json(slug, "bubbles.json") or []}
+    # cover pages keep their stylized title art untouched; the reader
+    # letters translations into caption chips instead of into bubbles.
+    # meta.json may carry "covers": [page indices]; the first page is
+    # assumed to be one until real cover detection exists.
+    covers = set(meta.get("covers", [0]))
     pages = []
     by_page = {p["page"]: p for p in ocr}
     for n in range(meta["page_count"]):
@@ -174,6 +187,7 @@ def reader_data(slug: str, language: str = "English"):
         pages.append({
             "width": p["width"] if p else None,
             "height": p["height"] if p else None,
+            "cover": n in covers,
             "blocks": blocks,
         })
     return {

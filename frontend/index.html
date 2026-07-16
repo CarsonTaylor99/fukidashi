@@ -175,13 +175,15 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
   /* comic lettering fonts carry their weight at 400; 1.16 leading is the
      lettering norm — tighter reads cramped, looser falls apart in ovals */
   font-weight: 400; line-height: 1.16; letter-spacing: .02em;
-  overflow: hidden; border-radius: 8px; overflow-wrap: break-word;
+  overflow: hidden; border-radius: 8px;
+  /* words never split mid-word (bad lettering) — boxes too narrow for
+     their longest word get condensed via scaleX in readableFloor instead */
 }
 .ov span { text-wrap: balance; }
 /* shaped flow: two invisible floats carve everything outside the bubble
    contour out of the line boxes (shape-outside), so text wraps to the
    bubble's own curve — long lines through the belly, short at the crown */
-.ov.shaped { display: block; overflow-wrap: normal; }  /* never split words: too-wide words must drop to a wider row instead */
+.ov.shaped { display: block; }
 .ov.shaped span { text-wrap: wrap; }
 .ov.shaped .sp { pointer-events: none; }
 .ov.shaped .sp.l { float: left; width: 50%; height: 100%; }
@@ -195,6 +197,15 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
   letter-spacing: .04em; line-height: 1.05;
   text-shadow: -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff,
                2px 2px 0 #fff, 0 0 6px #fff;
+}
+/* cover pages: stylized title art is never painted out — translations
+   ride in small caption chips beside the original text */
+.ov.caption {
+  display: block; width: max-content; max-width: 44%;
+  transform: translate(-50%, 0); border-radius: 6px;
+  background: rgba(255,255,255,.93); color: #1a1714;
+  padding: .28em .6em; line-height: 1.25; letter-spacing: .01em;
+  box-shadow: 0 1px 6px rgba(0,0,0,.35); overflow: visible;
 }
 .ov:hover { box-shadow: inset 0 0 0 2px var(--shu); z-index: 5; }
 .ov.pending { color: transparent; }
@@ -264,6 +275,7 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
     <button id="mode-btn" title="toggle long-strip view (v)">Long strip</button>
     <button id="ov-btn" class="on" title="toggle translations (t)">Translation</button>
     <button id="bible-btn" title="story bible (b)">Bible</button>
+    <button id="dl-btn" title="download the typeset pages as a zip of images">⤓ ZIP</button>
     <span id="page-ind"></span>
   </div>
   <div id="stage">
@@ -334,6 +346,10 @@ function volCard(v) {
       <button class="del" title="delete volume">delete</button>
     </div>
     <div class="joblog"></div>`;
+  // a job survives the browser closing (it lives in the server); re-attach
+  // the progress log for running jobs, and for failed ones so the error
+  // is still readable after a reload
+  if (v.job && (v.job.running || v.job.error)) attachLog(v.slug, el);
   el.querySelector('.translate').onclick = () => startJob(v.slug, el);
   el.querySelectorAll('.read').forEach(b => b.onclick = () => openReader(v.slug, b.dataset.lang));
   el.querySelector('.del').onclick = async () => {
@@ -346,7 +362,6 @@ function volCard(v) {
 
 async function startJob(slug, card) {
   const lang = card.querySelector('.lang').value.trim() || 'English';
-  const log = card.querySelector('.joblog');
   const btn = card.querySelector('.translate');
   btn.disabled = true;
   try {
@@ -354,20 +369,32 @@ async function startJob(slug, card) {
     if (card.querySelector('.force').checked) fd.append('force', 'true');
     await api(`/api/volumes/${slug}/translate`, { method: 'POST', body: fd });
   } catch (e) { toast(e.message); btn.disabled = false; return; }
+  attachLog(slug, card);
+}
+
+/* stream a job's progress into the card's log; the server replays the
+   whole event history on connect, so this also restores logs after a
+   page reload (jobs die with the server process, not the browser) */
+const _logStreams = {};
+function attachLog(slug, card) {
+  if (_logStreams[slug]) _logStreams[slug].close();
+  const log = card.querySelector('.joblog');
+  const btn = card.querySelector('.translate');
+  btn.disabled = true;
   log.classList.add('active'); log.textContent = '';
-  const es = new EventSource(`/api/volumes/${slug}/progress`);
+  const es = _logStreams[slug] = new EventSource(`/api/volumes/${slug}/progress`);
   es.onmessage = ev => {
     const d = JSON.parse(ev.data);
     if (d.done !== undefined) {
-      es.close(); btn.disabled = false;
+      es.close(); delete _logStreams[slug]; btn.disabled = false;
       if (d.error) { log.innerHTML += `<span class="err">${esc(d.error)}</span>`; }
-      else loadLibrary();
+      else loadLibrary();  // no re-attach loop: finished jobs aren't running/error
       return;
     }
     log.textContent += d.message + '\n';
     log.scrollTop = log.scrollHeight;
   };
-  es.onerror = () => { es.close(); btn.disabled = false; };
+  es.onerror = () => { es.close(); delete _logStreams[slug]; btn.disabled = false; };
 }
 
 /* ---------- import ---------- */
@@ -428,13 +455,18 @@ $('#lang-sel').onchange = e => openReader(R.slug, e.target.value);
 /* Show the cleaned (text-erased) page only when every block on it has a
    translation to letter in — otherwise readers would face empty bubbles.
    With translations toggled off, always show the untouched original. */
-function useCleaned(n) {
+function fullyTranslated(n) {
   const p = R.data.pages[n];
-  return !$('#reader').classList.contains('hide-ov') &&
-         p && p.blocks.length > 0 && p.blocks.every(b => b.translation != null);
+  return p && p.blocks.length > 0 && p.blocks.every(b => b.translation != null);
 }
-function pageSrc(n) {
-  return `/api/volumes/${R.slug}/${useCleaned(n) ? 'cleaned' : 'pages'}/${n}`;
+function useCleaned(n, ignoreToggle = false) {
+  const p = R.data.pages[n];
+  // cover pages always show the untouched art — captions go on top
+  return (ignoreToggle || !$('#reader').classList.contains('hide-ov')) &&
+         p && !p.cover && fullyTranslated(n);
+}
+function pageSrc(n, ignoreToggle = false) {
+  return `/api/volumes/${R.slug}/${useCleaned(n, ignoreToggle) ? 'cleaned' : 'pages'}/${n}`;
 }
 
 /* mode: 'single' (one page, edge/arrow nav) or 'strip' (all pages in one
@@ -521,10 +553,10 @@ function showPage(n) {
     if (k >= 0 && k < d.page_count) new Image().src = pageSrc(k);
 }
 
-function renderOverlays(wrap, n) {
+function renderOverlays(wrap, n, forExport = false) {
   const page = R.data.pages[n];
   if (!page || !page.width) return;
-  const cleaned = useCleaned(n);
+  const cleaned = useCleaned(n, forExport);
   wrap.querySelectorAll('.ov, .ov-mask').forEach(o => o.remove());
   const pct = (v, total) => (v / total * 100) + '%';
   const place = (el, x, y, w, h) => {
@@ -533,6 +565,17 @@ function renderOverlays(wrap, n) {
     el.style.width = pct(w, page.width);
     el.style.height = pct(h, page.height);
   };
+  if (page.cover) {
+    // cover art (stylized title lettering) is never masked or replaced:
+    // each translated block gets a small caption chip beside the original
+    for (const b of page.blocks) {
+      if (b.translation == null) continue;
+      const ov = captionOverlay(b, page);
+      wrap.appendChild(ov);
+      ov._refit();
+    }
+    return;
+  }
   for (const b of page.blocks) {
     // detected bubble on a cleaned page: the original text is already
     // erased server-side — flow into the bubble's actual shape when we
@@ -588,6 +631,15 @@ function renderOverlays(wrap, n) {
     }
     let lx = Math.max(6, Math.min(cx - lw / 2, page.width - lw - 6));
     let ly = Math.max(6, Math.min(cy - lh / 2, page.height - lh - 6));
+    // the widened label must not trample neighbouring text: pull it back
+    // toward the source box until it clears every other block on the page
+    const others = page.blocks.filter(o => o !== b).map(o => o.box);
+    const hits = () => others.some(([ox1, oy1, ox2, oy2]) =>
+      lx < ox2 && lx + lw > ox1 && ly < oy2 && ly + lh > oy1);
+    while (lw > bw + 1 && hits()) {
+      lw = Math.max(bw, lw * 0.88);
+      lx = Math.max(6, Math.min(cx - lw / 2, page.width - lw - 6));
+    }
     const ov = document.createElement('div');
     ov.className = 'ov' + (b.translation == null ? ' pending' : '');
     place(ov, lx, ly, lw, lh);
@@ -598,6 +650,28 @@ function renderOverlays(wrap, n) {
     ov._refit = () => fitText(ov);
     ov._refit();
   }
+}
+
+/* cover caption: a chip hung just below the source text (above it when
+   the text sits at the page bottom), sized to the page, art untouched */
+function captionOverlay(b, page) {
+  const [x1, y1, x2, y2] = b.box;
+  const ov = document.createElement('div');
+  ov.className = 'ov caption';
+  ov.style.left = ((x1 + x2) / 2 / page.width * 100) + '%';
+  const gap = 0.012 * page.height;
+  const below = y2 + gap < page.height * 0.97;
+  ov.style.top = ((below ? y2 + gap : y1 - gap) / page.height * 100) + '%';
+  if (!below) ov.style.transform = 'translate(-50%, -100%)';
+  ov.appendChild(document.createElement('span')).textContent = b.translation;
+  ov._refit = () => {
+    const img = ov.parentElement && ov.parentElement.querySelector('img');
+    if (img) ov.style.fontSize =
+      Math.max(10, Math.min(18, img.clientWidth * 0.022)) + 'px';
+  };
+  ov.onmousemove = e => showTip(e, b.text);
+  ov.onmouseleave = hideTip;
+  return ov;
 }
 
 function sfxOverlay(b, page) {
@@ -687,18 +761,42 @@ function shapedOverlay(b, chords, place) {
   return ov;
 }
 
+/* client rects of the rendered text lines — the span's own box lies about
+   width (flex items stretch, floats inset), the line fragments don't */
+function lineRects(span) {
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  return [...range.getClientRects()];
+}
+
+/* undo a previous fit's rescue styling so refits start clean */
+function resetFit(ov) {
+  ov.style.transform = ''; delete ov.dataset.condense;
+  ov.style.overflow = ''; ov.style.zIndex = '';
+}
+
 function fitShaped(ov) {
-  // same binary search as fitText, but overflow shows up as content
-  // pushed below the full-height floats, i.e. scrollHeight growth;
-  // the wrapped text's bbox is also capped at ~70% of the region area
+  // same binary search as fitText; vertical overflow shows up as content
+  // pushed below the full-height floats, i.e. scrollHeight growth, and a
+  // word too wide for its row sticks out horizontally — narrow vertical
+  // bubbles hit this with short exclamations, so lines must also stay
+  // inside the region's own edges; the wrapped text's bbox is capped at
+  // ~76% of the region area
   const span = ov.lastElementChild;
+  resetFit(ov);
   ov._shape(0);
-  let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
+  let lo = 7, hi = Math.min(52, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
     if (ov.scrollHeight > ov.clientHeight + 0.5) return false;
+    const rects = lineRects(span);
+    if (rects.length) {
+      const o = ov.getBoundingClientRect();
+      if (Math.max(...rects.map(q => q.right)) > o.right + 1 ||
+          Math.min(...rects.map(q => q.left)) < o.left - 1) return false;
+    }
     const r = span.getBoundingClientRect();
-    return r.width * r.height <= 0.70 * ov.clientWidth * ov.clientHeight + 0.5;
+    return r.width * r.height <= 0.76 * ov.clientWidth * ov.clientHeight + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -718,23 +816,22 @@ function fitShaped(ov) {
 }
 
 function fitText(ov) {
-  // largest size (binary search) whose wrapped-text bbox fills ~70% of
-  // the label box (0.84 per axis ≈ 70% by area) — measured on the inner
+  // largest size (binary search) whose wrapped-text bbox fills ~77% of
+  // the label box (0.88 per axis ≈ 77% by area) — measured on the inner
   // span: scrollHeight misses content that a centered flexbox pushes
   // past the TOP edge, which clipped first lines
   const span = ov.firstElementChild;
-  let lo = 7, hi = Math.min(44, Math.round(ov.clientHeight * 0.8));
+  resetFit(ov);
+  let lo = 7, hi = Math.min(52, Math.round(ov.clientHeight * 0.8));
   const fits = s => {
     ov.style.fontSize = s + 'px';
     // measure the rendered lines, not the span box: a wrapped flex item
     // stretches to the container width even when balanced lines are short
-    const range = document.createRange();
-    range.selectNodeContents(span);
-    const rects = [...range.getClientRects()];
+    const rects = lineRects(span);
     if (!rects.length) return true;
     const w = Math.max(...rects.map(r => r.width));
     const h = Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top));
-    return h <= ov.clientHeight * 0.84 + 0.5 && w <= ov.clientWidth * 0.84 + 0.5;
+    return h <= ov.clientHeight * 0.88 + 0.5 && w <= ov.clientWidth * 0.88 + 0.5;
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -744,10 +841,24 @@ function fitText(ov) {
 }
 
 /* a fit that bottomed out below readable size means the region was too
-   small for the text — better to overflow the region a little than to
-   ship microscopic type */
+   small for the text. Set the readable minimum, and if the blocker is a
+   word wider than the region — the narrow-vertical-bubble exclamation
+   case — condense the type horizontally (scaleX) like a letterer would,
+   instead of spilling across neighbouring bubbles. Only what condensing
+   can't absorb is allowed to overflow visibly. */
 function readableFloor(ov, size) {
   if (size >= 10) return size;
+  ov.style.fontSize = '10px';
+  const span = ov.querySelector('span');
+  const rects = span ? lineRects(span) : [];
+  if (rects.length) {
+    const maxw = Math.max(...rects.map(r => r.width));
+    if (maxw > ov.clientWidth) {
+      const s = Math.max(0.72, ov.clientWidth / maxw);
+      ov.style.transform = `scaleX(${s.toFixed(3)})`;
+      ov.dataset.condense = s.toFixed(3);
+    }
+  }
   ov.style.overflow = 'visible';
   ov.style.zIndex = 4;
   return 10;
@@ -765,10 +876,226 @@ function showTip(e, text) {
 }
 function hideTip() { $('#orig-tip').style.display = 'none'; }
 
+/* ---------- export: typeset pages → zip of images ----------
+   Each page is laid out offscreen with the exact same overlay code the
+   reader uses, then the rendered text lines are read back off the DOM
+   and drawn onto a canvas over the cleaned image at native resolution —
+   so the file matches what the reader shows, fonts and fits included.
+   Pages not fully translated are passed through untouched. */
+const EXPORT_W = 840;  // layout width ≈ what the reader displays at, so
+                       // the px-tuned fit constants behave identically
+
+async function exportCbz() {
+  const btn = $('#dl-btn');
+  btn.disabled = true;
+  try {
+    // make sure the lettering fonts are rasterisable before drawing
+    // (font-display:swap would silently paint fallbacks otherwise)
+    await Promise.allSettled(
+      ['16px "Komika Text"', '16px "Back Issues BB"', '16px "Permanent Marker"']
+        .map(f => document.fonts.load(f)));
+    const files = [];
+    for (let n = 0; n < R.data.page_count; n++) {
+      btn.textContent = `${n + 1} / ${R.data.page_count}…`;
+      files.push(await renderPageFile(n));
+    }
+    downloadBlob(makeZip(files), `${R.data.title} [${R.lang}].zip`);
+    toast(`exported ${files.length} typeset pages (rename .zip → .cbz for manga readers)`);
+  } catch (e) {
+    toast('export failed: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = '⤓ ZIP';
+}
+
+const IMG_EXT = { 'image/png': 'png', 'image/webp': 'webp' };
+async function renderPageFile(n) {
+  const page = R.data.pages[n];
+  const blob = await (await fetch(pageSrc(n, true))).blob();
+  const name = `page_${String(n + 1).padStart(4, '0')}.` + (IMG_EXT[blob.type] || 'jpg');
+  // no full translation to letter in: ship the original bytes untouched
+  // (covers letter caption chips over the original art instead)
+  if (!useCleaned(n, true) && !(page.cover && fullyTranslated(n)))
+    return { name, data: new Uint8Array(await blob.arrayBuffer()) };
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `position:fixed;left:-10000px;top:0;width:${EXPORT_W}px`;
+  const img = document.createElement('img');
+  img.style.cssText = 'display:block;width:100%';
+  wrap.appendChild(img);
+  document.body.appendChild(wrap);
+  try {
+    await new Promise((res, rej) => {
+      img.onload = res; img.onerror = () => rej(new Error(`page ${n + 1} failed to load`));
+      img.src = URL.createObjectURL(blob);
+    });
+    renderOverlays(wrap, n, true);
+    const canvas = document.createElement('canvas');
+    canvas.width = page.width; canvas.height = page.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(await createImageBitmap(blob), 0, 0, page.width, page.height);
+    drawOverlays(ctx, wrap, page.width / img.clientWidth);
+    const out = await new Promise(r =>
+      canvas.toBlob(r, blob.type === 'image/jpeg' ? 'image/jpeg' : blob.type, 0.95));
+    return { name, data: new Uint8Array(await out.arrayBuffer()) };
+  } finally {
+    URL.revokeObjectURL(img.src);
+    wrap.remove();
+  }
+}
+
+function drawOverlays(ctx, wrap, f) {
+  const base = wrap.getBoundingClientRect();
+  ctx.save();
+  ctx.scale(f, f);
+  for (const el of wrap.querySelectorAll('.ov-mask')) {
+    // the feathered white mask over un-erased source text (SFX etc.)
+    const r = el.getBoundingClientRect();
+    ctx.save();
+    ctx.fillStyle = '#fff'; ctx.shadowColor = '#fff'; ctx.shadowBlur = 7;
+    ctx.beginPath();
+    ctx.ellipse(r.left - base.left + r.width / 2, r.top - base.top + r.height / 2,
+                r.width / 2 + 3, r.height / 2 + 3, 0, 0, 2 * Math.PI);
+    ctx.fill(); ctx.fill();
+    ctx.restore();
+  }
+  for (const ov of wrap.querySelectorAll('.ov')) drawOv(ctx, ov, base);
+  ctx.restore();
+}
+
+function drawOv(ctx, ov, base) {
+  const span = ov.querySelector('span');
+  if (!span || !span.textContent) return;
+  if (ov.classList.contains('caption')) {
+    // the chip's own rounded white card, under its text
+    const r = ov.getBoundingClientRect();
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,.93)';
+    ctx.beginPath();
+    ctx.roundRect(r.left - base.left, r.top - base.top, r.width, r.height, 6);
+    ctx.fill();
+    ctx.restore();
+  }
+  // measure untransformed, then apply the condensation as a canvas
+  // transform around the same centre the CSS scaleX uses
+  const cond = +(ov.dataset.condense || 1);
+  if (cond < 1) ov.style.transform = 'none';
+  const lines = extractLines(span);
+  const cs = getComputedStyle(ov);
+  const sfx = ov.classList.contains('sfx');
+  ctx.save();
+  if (cond < 1) {
+    const r = ov.getBoundingClientRect();
+    const cx = r.left - base.left + r.width / 2;
+    ctx.translate(cx, 0); ctx.scale(cond, 1); ctx.translate(-cx, 0);
+    ov.style.transform = `scaleX(${cond})`;
+  }
+  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  if ('letterSpacing' in ctx)
+    ctx.letterSpacing = cs.letterSpacing === 'normal' ? '0px' : cs.letterSpacing;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = cs.color;
+  for (const ln of lines) {
+    const x = ln.x - base.left, y = ln.y - base.top;
+    if (sfx) {
+      // the CSS text-shadow halo, as a rounded white stroke
+      ctx.save();
+      ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(3, parseFloat(cs.fontSize) * 0.22);
+      ctx.strokeText(ln.text, x, y);
+      ctx.restore();
+    }
+    ctx.fillText(ln.text, x, y);
+  }
+  ctx.restore();
+}
+
+/* the browser's own line breaking, read back: client rect of every
+   character, grouped into lines by vertical position */
+function extractLines(span) {
+  const lines = [];
+  const range = document.createRange();
+  const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+  let cur = null;
+  for (let node; (node = walker.nextNode()); ) {
+    const s = node.textContent;
+    for (let i = 0; i < s.length; i++) {
+      range.setStart(node, i); range.setEnd(node, i + 1);
+      const r = range.getClientRects()[0];
+      if (!r || !r.width) continue;  // collapsed whitespace at a break
+      if (!cur || Math.abs(r.top - cur.top) > r.height / 2) {
+        cur = { text: '', x: r.left, top: r.top, bottom: r.bottom };
+        lines.push(cur);
+      } else if (r.left > cur.right + 0.5) {
+        cur.text += ' ';  // the collapsed space between words
+      }
+      cur.text += s[i];
+      cur.right = r.right;
+      cur.bottom = Math.max(cur.bottom, r.bottom);
+    }
+  }
+  for (const l of lines) l.y = (l.top + l.bottom) / 2;
+  return lines;
+}
+
+/* store-only zip: pages are already jpeg/png, compression would be noise */
+const CRC_T = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(u8) {
+  let c = 0xffffffff;
+  for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const parts = [], central = [];
+  let off = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, sz, true); lh.setUint32(22, sz, true);
+    lh.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(lh.buffer), name, f.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true);
+    ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, sz, true); ch.setUint32(24, sz, true);
+    ch.setUint16(28, name.length, true);
+    ch.setUint32(42, off, true);
+    central.push(new Uint8Array(ch.buffer), name);
+    off += 30 + name.length + sz;
+  }
+  const cdSize = central.reduce((a, c) => a + c.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)],
+                  { type: 'application/zip' });
+}
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
 /* manga is RTL: left edge / ← = next page */
 document.querySelector('.edge.left').onclick = () => nav(+1);
 document.querySelector('.edge.right').onclick = () => nav(-1);
 $('#back-btn').onclick = closeReader;
+$('#dl-btn').onclick = exportCbz;
 $('#mode-btn').onclick = toggleMode;
 $('#ov-btn').onclick = toggleOv;
 $('#bible-btn').onclick = () => $('#bible-drawer').classList.toggle('open');

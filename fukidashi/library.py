@@ -5,7 +5,10 @@ Each volume lives at LIBRARY_DIR/<slug>/ :
     ocr.json        parsed OCR blocks (written by ocr.py)
     bible.json      story bible (written by bible.py)
     translations.<lang>.json   per-page block translations (translate.py)
-    meta.json       {"title": ..., "page_count": ...}
+    meta.json       {"title": ..., "page_count": ...,
+                     optional "covers": [page indices] — pages whose art
+                     the reader letters with caption chips instead of
+                     bubble typesetting (default [0], the cover page)}
 """
 
 import json

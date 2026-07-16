@@ -24,7 +24,8 @@ ollama pull aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m   # ~17GB VRAM; SF
 
 1. Open the web UI, drop in a `.cbz`/`.zip` of page images, give it a title.
 2. Type a target language (anything: `English`, `Spanish`, `Brazilian Portuguese`…) and hit **Translate**. Progress streams live; first ever run also downloads the OCR models.
-3. Hit **Read**. Arrow keys turn pages (manga order: ← is *next*), `t` toggles translations, `b` opens the story bible, hover a bubble for the original text.
+3. Hit **Read**. Arrow keys turn pages (manga order: ← is *next*), `t` toggles translations, `v` toggles long-strip view, `b` opens the story bible, hover a bubble for the original text.
+4. **⤓ ZIP** in the reader bar downloads the volume with the translations typeset into the pages — a zip of images (rename to `.cbz` and it opens in any manga reader). Fully-translated pages are rendered at native resolution with the same lettering the reader shows; untranslated pages pass through untouched.
 
 Translation is resumable — if a run is interrupted, re-running skips already-translated pages. A story bible is built once per volume per language and reused.
 
