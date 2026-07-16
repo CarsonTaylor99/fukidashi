@@ -858,28 +858,39 @@ function fitText(ov) {
   ov.style.fontSize = readableFloor(ov, lo) + 'px';
 }
 
-/* a fit that bottomed out below readable size means the region was too
-   small for the text. Set the readable minimum, and if the blocker is a
-   word wider than the region — the narrow-vertical-bubble exclamation
-   case — condense the type horizontally (scaleX) like a letterer would,
-   instead of spilling across neighbouring bubbles. Only what condensing
-   can't absorb is allowed to overflow visibly. */
+/* a fit that bottomed out below readable size means the region is too
+   small for the text. Text must NEVER escape its bubble: condense the
+   type (scaleX, like a letterer) so the widest word fits, and if it
+   still overflows vertically keep shrinking below the 10px comfort
+   floor — small-but-inside beats readable-but-bleeding over the art.
+   Whatever can't fit even at 6px condensed is clipped; the original is
+   always a hover away. */
 function readableFloor(ov, size) {
   if (size >= 10) return size;
-  ov.style.fontSize = '10px';
   const span = ov.querySelector('span');
-  const rects = span ? lineRects(span) : [];
-  if (rects.length) {
+  for (let s = 10; s >= 6; s--) {
+    ov.style.fontSize = s + 'px';
+    ov.style.transform = ''; delete ov.dataset.condense;
+    const rects = span ? lineRects(span) : [];
+    if (!rects.length) return s;
     const maxw = Math.max(...rects.map(r => r.width));
     if (maxw > ov.clientWidth) {
-      const s = Math.max(0.72, ov.clientWidth / maxw);
-      ov.style.transform = `scaleX(${s.toFixed(3)})`;
-      ov.dataset.condense = s.toFixed(3);
+      const c = Math.max(0.72, ov.clientWidth / maxw);
+      ov.style.transform = `scaleX(${c.toFixed(3)})`;
+      ov.dataset.condense = c.toFixed(3);
     }
+    if (contained(ov, span)) return s;
   }
-  ov.style.overflow = 'visible';
-  ov.style.zIndex = 4;
-  return 10;
+  return 6;
+}
+
+/* every rendered line inside the region's own box — no spill */
+function contained(ov, span) {
+  if (ov.scrollHeight > ov.clientHeight + 0.5) return false;
+  const o = ov.getBoundingClientRect();
+  return lineRects(span).every(r =>
+    r.top >= o.top - 1 && r.bottom <= o.bottom + 1 &&
+    r.left >= o.left - 1 && r.right <= o.right + 1);
 }
 
 function showTip(e, text) {
