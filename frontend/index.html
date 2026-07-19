@@ -143,7 +143,8 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 #page-ind { font-variant-numeric: tabular-nums; color: #9a928a; }
 
 #stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; padding: 14px; }
-#page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); }
+/* overflow hidden: masks and lettering may never paint past the page edge */
+#page-wrap { position: relative; max-height: 100%; max-width: 100%; box-shadow: 0 0 60px rgba(0,0,0,.7); overflow: hidden; }
 #page-img { display: block; max-height: calc(100vh - 90px); max-width: 100%; user-select: none; }
 
 /* long-strip mode: every page in one vertical scroll, manga-site style */
@@ -155,7 +156,7 @@ header.masthead { display: flex; align-items: baseline; gap: 18px; border-bottom
 }
 .strip-page {
   position: relative; width: min(100%, 840px); margin: 0 auto 14px;
-  box-shadow: 0 0 40px rgba(0,0,0,.6);
+  box-shadow: 0 0 40px rgba(0,0,0,.6); overflow: hidden;
 }
 .strip-page img { display: block; width: 100%; background: #201d18; user-select: none; }
 
@@ -662,6 +663,11 @@ function renderOverlays(wrap, n, forExport = false) {
     ov.onmousemove = e => showTip(e, b.text);
     ov.onmouseleave = hideTip;
     wrap.appendChild(ov);
+    // the white backdrop readers actually see is the mask's inscribed
+    // ellipse (the export draws exactly that), so the lettering must fit
+    // the ellipse, not the label rectangle — a full rect's corners would
+    // sit on art outside the white
+    if (m2) ov._contain = rects => insideEllipse(rects, m2.getBoundingClientRect());
     // this "bubble" is our own white mask, so a text that can't fit at
     // readable size grows the label (and the mask with it) over more
     // art instead of shrinking or clipping — stopping short of
@@ -726,8 +732,13 @@ function captionOverlay(b, page) {
   setLetteringText(ov.appendChild(document.createElement('span')), b.translation);
   ov._refit = () => {
     const img = ov.parentElement && ov.parentElement.querySelector('img');
-    if (img) ov.style.fontSize =
-      Math.max(10, Math.min(18, img.clientWidth * 0.022)) + 'px';
+    if (!img) return;
+    ov.style.fontSize = Math.max(10, Math.min(18, img.clientWidth * 0.022)) + 'px';
+    // a chip centered on text near the page edge would hang off it
+    ov.style.marginLeft = '';
+    const r = ov.getBoundingClientRect(), pr = img.getBoundingClientRect();
+    if (r.left < pr.left + 4) ov.style.marginLeft = (pr.left + 4 - r.left) + 'px';
+    else if (r.right > pr.right - 4) ov.style.marginLeft = (pr.right - 4 - r.right) + 'px';
   };
   ov.onmousemove = e => showTip(e, b.text);
   ov.onmouseleave = hideTip;
@@ -780,8 +791,16 @@ function sfxOverlay(b, page) {
     const img = ov.parentElement && ov.parentElement.querySelector('img');
     if (!img) return [0, 0, 0, 0];
     const scale = img.clientWidth / page.width;
-    const w = Math.max(ov.offsetWidth, ov.scrollWidth) / scale;
-    const h = ov.offsetHeight / scale;
+    // measure the rendered glyph rects, not the layout box: display
+    // fonts (Permanent Marker) carry em boxes well past the 1.05
+    // line-height, so offsetHeight undersizes the mask by ~40%
+    const rl = lineRects(ov.querySelector('span'));
+    const w = (rl.length
+      ? Math.max(...rl.map(r => r.right)) - Math.min(...rl.map(r => r.left))
+      : Math.max(ov.offsetWidth, ov.scrollWidth)) / scale;
+    const h = (rl.length
+      ? Math.max(...rl.map(r => r.bottom)) - Math.min(...rl.map(r => r.top))
+      : ov.offsetHeight) / scale;
     // real breathing room off the page edge — touching it reads as clipped
     const M = Math.max(14, 0.012 * page.width);
     const mcx = Math.max(M + w / 2, Math.min(cx, page.width - M - w / 2));
@@ -794,7 +813,10 @@ function sfxOverlay(b, page) {
       ov.parentElement.insertBefore(ov._m2, ov);
     }
     if (ov._m2) {
-      const mw = w * 1.15, mh = h * 1.35;
+      // the ellipse inscribed in the mask box must contain the text's
+      // corners: (0.5/(mw/2w))² + (0.5/(mh/2h))² ≤ 1 — 1.32/1.55 lands
+      // at 0.99; the old 1.15/1.35 left every corner outside the white
+      const mw = w * 1.32, mh = h * 1.55;
       Object.assign(ov._m2.style, {
         left: (mcx - mw / 2) / page.width * 100 + '%',
         top: (mcy - mh / 2) / page.height * 100 + '%',
@@ -863,6 +885,31 @@ function shapedOverlay(b, chords, place) {
     l.style.shapeOutside = `polygon(${lp.join(',')})`;
     r.style.shapeOutside = `polygon(${rp.join(',')})`;
   };
+  // the inset contour, interpolated at any height — the containment
+  // oracle behind the floats: shape-outside only *suggests* the region,
+  // an unbreakable word overflows it silently and pokes through the
+  // bubble wall (worst at the narrow crown/base rows)
+  const xAt = yp => {
+    if (yp <= pts[0][0]) return pts[0];
+    for (let i = 1; i < pts.length; i++)
+      if (yp <= pts[i][0]) {
+        const [y0, l0, r0] = pts[i - 1], [yn, ln, rn] = pts[i];
+        const t = (yp - y0) / (yn - y0 || 1);
+        return [yp, l0 + (ln - l0) * t, r0 + (rn - r0) * t];
+      }
+    return pts[pts.length - 1];
+  };
+  ov._contain = rects => {
+    const o = ov.getBoundingClientRect();
+    if (!o.height) return true;
+    return rects.every(q => {
+      const a = xAt((q.top - o.top) / o.height * 100);
+      const c = xAt((q.bottom - o.top) / o.height * 100);
+      const xl = o.left + Math.max(a[1], c[1]) / 100 * o.width / 2;
+      const xr = o.left + o.width / 2 + Math.min(a[2], c[2]) / 100 * o.width / 2;
+      return q.left >= xl - 2 && q.right <= xr + 2;
+    });
+  };
   ov.onmousemove = e => showTip(e, b.text);
   ov.onmouseleave = hideTip;
   ov._refit = () => fitShaped(ov);
@@ -897,6 +944,25 @@ function lineRects(span) {
   return [...range.getClientRects()];
 }
 
+/* Line rects span the font's full bounding box, and comic lettering
+   fonts pad that far past the glyph ink (~1.3-1.45em against the 1.16
+   leading) — fitting dialogue to raw rects shrinks text that never
+   actually touches the bubble. Shave the measured ink gap off the
+   vertical edges of each line rect; horizontal advance widths are
+   already ink-accurate. */
+const _mctx = document.createElement('canvas').getContext('2d');
+function inkRects(span) {
+  const rects = lineRects(span);
+  if (!rects.length) return rects;
+  const cs = getComputedStyle(span);
+  _mctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const m = _mctx.measureText(span.textContent);
+  const t = Math.max(0, m.fontBoundingBoxAscent - m.actualBoundingBoxAscent);
+  const b = Math.max(0, m.fontBoundingBoxDescent - m.actualBoundingBoxDescent);
+  return rects.map(r => ({ left: r.left, right: r.right,
+                           top: r.top + t, bottom: r.bottom - b }));
+}
+
 /* undo a previous fit's rescue styling so refits start clean */
 function resetFit(ov) {
   ov.style.transform = ''; delete ov.dataset.condense;
@@ -917,11 +983,17 @@ function fitShaped(ov) {
   const fits = s => {
     ov.style.fontSize = s + 'px';
     if (ov.scrollHeight > ov.clientHeight + 0.5) return false;
-    const rects = lineRects(span);
+    // ink rects, not raw: dialogue must fill the bubble like a letterer
+    // would — only real glyph ink crossing the region or its contour
+    // rejects a size, never the font's padded em box
+    const rects = inkRects(span);
     if (rects.length) {
       const o = ov.getBoundingClientRect();
       if (Math.max(...rects.map(q => q.right)) > o.right + 1 ||
-          Math.min(...rects.map(q => q.left)) < o.left - 1) return false;
+          Math.min(...rects.map(q => q.left)) < o.left - 1 ||
+          Math.min(...rects.map(q => q.top)) < o.top - 1 ||
+          Math.max(...rects.map(q => q.bottom)) > o.bottom + 1) return false;
+      if (!ov._contain(rects)) return false;
     }
     const r = span.getBoundingClientRect();
     return r.width * r.height <= 0.76 * ov.clientWidth * ov.clientHeight + 0.5;
@@ -938,7 +1010,10 @@ function fitShaped(ov) {
   let shelf = Math.max(0, (ov.clientHeight - used) / 2 / ov.clientHeight * 100);
   for (; shelf >= 1; shelf /= 2) {
     ov._shape(shelf);
-    if (ov.scrollHeight <= ov.clientHeight + 0.5) return;
+    // shelving reflows the text into lower (often narrower) rows —
+    // recheck the contour, not just the height
+    if (ov.scrollHeight <= ov.clientHeight + 0.5 &&
+        ov._contain(inkRects(span))) return;
   }
   ov._shape(0);
 }
@@ -959,7 +1034,8 @@ function fitText(ov) {
     if (!rects.length) return true;
     const w = Math.max(...rects.map(r => r.width));
     const h = Math.max(...rects.map(r => r.bottom)) - Math.min(...rects.map(r => r.top));
-    return h <= ov.clientHeight * 0.88 + 0.5 && w <= ov.clientWidth * 0.88 + 0.5;
+    if (h > ov.clientHeight * 0.88 + 0.5 || w > ov.clientWidth * 0.88 + 0.5) return false;
+    return !ov._contain || ov._contain(rects);
   };
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
@@ -989,9 +1065,20 @@ function readableFloor(ov, size) {
       ov.style.transform = `scaleX(${c.toFixed(3)})`;
       ov.dataset.condense = c.toFixed(3);
     }
-    if (contained(ov, span)) return s;
+    if (contained(ov, span) && (!ov._contain || ov._contain(
+          ov.classList.contains('shaped') ? inkRects(span) : lineRects(span)))) return s;
   }
   return 5;
+}
+
+/* every rect corner inside the ellipse inscribed in box er — the visible
+   white of a mask (its feather adds a couple px of real white beyond) */
+function insideEllipse(rects, er) {
+  const a = er.width / 2 + 2, b = er.height / 2 + 2;
+  const cx = er.left + er.width / 2, cy = er.top + er.height / 2;
+  return rects.every(r =>
+    [[r.left, r.top], [r.right, r.top], [r.left, r.bottom], [r.right, r.bottom]]
+      .every(([x, y]) => ((x - cx) / a) ** 2 + ((y - cy) / b) ** 2 <= 1));
 }
 
 /* every rendered line inside the region's own box — no spill */
@@ -1119,15 +1206,22 @@ function drawOv(ctx, ov, base) {
   // transform around the same centre the CSS scaleX uses
   const cond = +(ov.dataset.condense || 1);
   if (cond < 1) ov.style.transform = 'none';
+  const ubox = ov.getBoundingClientRect();
   const lines = extractLines(span);
   const cs = getComputedStyle(ov);
   const sfx = ov.classList.contains('sfx');
   ctx.save();
   if (cond < 1) {
-    const r = ov.getBoundingClientRect();
-    const cx = r.left - base.left + r.width / 2;
+    const cx = ubox.left - base.left + ubox.width / 2;
     ctx.translate(cx, 0); ctx.scale(cond, 1); ctx.translate(-cx, 0);
     ov.style.transform = `scaleX(${cond})`;
+  }
+  // bubble/label lettering is overflow:hidden in the reader — clip the
+  // canvas the same way, or exports show spill the reader never does
+  if (!sfx && !ov.classList.contains('caption')) {
+    ctx.beginPath();
+    ctx.rect(ubox.left - base.left, ubox.top - base.top, ubox.width, ubox.height);
+    ctx.clip();
   }
   if ('letterSpacing' in ctx)
     ctx.letterSpacing = cs.letterSpacing === 'normal' ? '0px' : cs.letterSpacing;
@@ -1273,6 +1367,14 @@ addEventListener('keydown', e => {
 addEventListener('resize', () => {
   if ($('#reader').classList.contains('open'))
     document.querySelectorAll('.ov').forEach(o => o._refit && o._refit());
+});
+/* the lettering fonts swap in after the first overlays render
+   (font-display: swap) with different metrics — refit, or fits and
+   masks measured against the fallback font are wrong on first view */
+document.fonts.addEventListener('loadingdone', () => {
+  document.querySelectorAll('.ov').forEach(o => o._refit && o._refit());
+  document.querySelectorAll('#page-wrap, .strip-page')
+    .forEach(w => resolveSfxCollisions(w));
 });
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
